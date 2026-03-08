@@ -522,85 +522,133 @@ export default function App() {
 
   // ─── Start Screen ─────────────────────────────────
   if (!audioStarted) {
+    const features = [
+      { icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/></svg>, label: 'Say "Nina" to talk' },
+      { icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>, label: 'Reads hardware sensors' },
+      { icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>, label: 'Powered by Gemini 2.5' },
+      { icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>, label: 'Emergency crash detection' },
+    ];
     return (
-      <div className="min-h-screen bg-white flex flex-col items-center justify-center p-8 max-w-md mx-auto">
-        <div className="w-20 h-20 bg-red-600 rounded-3xl flex items-center justify-center shadow-lg mb-8">
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none">
+      <div style={{
+        minHeight: '100dvh', background: 'var(--charcoal)',
+        display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center',
+        padding: '32px 24px', maxWidth: 420, margin: '0 auto',
+      }}>
+        {/* Logo mark */}
+        <div style={{
+          width: 80, height: 80, borderRadius: 24,
+          background: 'var(--red)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          boxShadow: '0 8px 40px var(--red-glow)',
+          marginBottom: 28,
+        }}>
+          <svg width="38" height="38" viewBox="0 0 24 24" fill="none">
             <path d="M12 2L3 7v10l9 5 9-5V7L12 2z" stroke="white" strokeWidth="2" strokeLinejoin="round"/>
             <path d="M12 12l9-5M12 12v10M12 12L3 7" stroke="white" strokeWidth="1.5"/>
           </svg>
         </div>
-        <h1 className="text-4xl font-black text-gray-900 mb-2 text-center">
-          Co <span className="text-red-600">Driver</span>
+
+        <h1 style={{ fontSize: 42, fontWeight: 700, color: 'var(--text-1)', marginBottom: 8, letterSpacing: '-2px', textAlign: 'center' }}>
+          Co<span style={{ color: 'var(--red)' }}>Driver</span>
         </h1>
-        <p className="text-gray-400 text-center mb-12 text-lg">Your AI co-pilot is ready</p>
-        <div className="w-full space-y-3 mb-8">
-          {["🎙️ Say \"Nina\" to talk", "📡 Reads hardware sensors", "🧠 Powered by Gemini 2.5", "🚨 Emergency crash detection"]
-            .map((f, i) => (
-            <div key={i} className="flex items-center gap-3 bg-gray-50 rounded-2xl px-4 py-3">
-              <span className="text-lg">{f.split(" ")[0]}</span>
-              <span className="text-sm text-gray-600">{f.split(" ").slice(1).join(" ")}</span>
+        <p style={{ color: 'var(--text-3)', fontSize: 16, marginBottom: 36, textAlign: 'center' }}>
+          Your AI co-pilot
+        </p>
+
+        {/* Features */}
+        <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 36 }}>
+          {features.map((f, i) => (
+            <div key={i} style={{
+              display: 'flex', alignItems: 'center', gap: 12,
+              background: 'var(--surface)', border: '1px solid var(--border)',
+              borderRadius: 14, padding: '12px 16px',
+              color: 'var(--text-2)',
+            }}>
+              <div style={{ color: 'var(--red)', flexShrink: 0 }}>{f.icon}</div>
+              <span style={{ fontSize: 14, fontWeight: 500 }}>{f.label}</span>
             </div>
           ))}
         </div>
-        <button onClick={unlockAudio}
-          className="w-full bg-red-600 text-white font-bold py-5 rounded-3xl text-xl shadow-lg active:scale-95 transition-transform">
-          Start CoDriver 🚗
+
+        <button onClick={unlockAudio} className="btn-red" style={{
+          width: '100%', padding: '18px', fontSize: 17,
+          border: 'none', cursor: 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+        }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
+            <polygon points="5 3 19 12 5 21 5 3"/>
+          </svg>
+          Start CoDriver
         </button>
-        <p className="text-xs text-gray-300 mt-4 text-center">Tap to enable voice & audio</p>
+        <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 14, textAlign: 'center', letterSpacing: '0.3px' }}>
+          TAP TO ENABLE VOICE & AUDIO
+        </p>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-white max-w-md mx-auto relative">
+    <div style={{ minHeight: '100dvh', background: 'var(--charcoal)', maxWidth: 480, margin: '0 auto', position: 'relative' }}>
       {crashAlert  && <CrashAlert crashData={crashData} onDismiss={dismissCrash} />}
       {tripSummary && <TripSummary summary={tripSummary} onClose={() => { setTripSummary(null); setTripEnded(false); }} />}
       {musicModal  && musicData && <MusicModal data={musicData} onClose={() => setMusicModal(false)} />}
 
-      <div className="pb-6">
-        <Header
-          connected={connected}
-          aiSpeaking={aiSpeaking}
-          micVolume={micVolume}
-          listenMode={listenMode}
-          tripStarted={tripStarted}
-        />
-        <div className="px-4 space-y-3">
-          <SpeedCard speedKmh={speedKmh} speedLimit={speedLimit} sensorData={sensorData} />
-          <StatsRow hardBrakes={hardBrakes} sharpTurns={sharpTurns} hardAccels={hardAccels}
-            currentGForce={currentGForce} tripStartTime={tripStartTimeRef.current} />
-          <DriverStatus emotion={emotion} setEmotion={setEmotion} gps={gps} />
+      <Header connected={connected} aiSpeaking={aiSpeaking} micVolume={micVolume} listenMode={listenMode} tripStarted={tripStarted} />
 
-          {/* Sensor connect — shown until hardware is connected */}
-          {!connected && (
-            <button onClick={connectBLE}
-              className="w-full bg-gray-800 text-white font-bold py-3 rounded-2xl text-sm shadow active:scale-95 transition-transform">
-              📡 Connect Sensor
-            </button>
-          )}
+      <div style={{ padding: '12px 14px 32px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <SpeedCard speedKmh={speedKmh} speedLimit={speedLimit} sensorData={sensorData} />
+        <StatsRow hardBrakes={hardBrakes} sharpTurns={sharpTurns} hardAccels={hardAccels}
+          currentGForce={currentGForce} tripStartTime={tripStartTimeRef.current} />
+        <DriverStatus emotion={emotion} setEmotion={setEmotion} gps={gps} />
 
-          <div className="flex gap-3">
-            {!tripStarted ? (
-              <button onClick={startTrip}
-                className="flex-1 bg-red-600 text-white font-bold py-4 rounded-2xl text-base shadow active:scale-95 transition-transform">
-                🚗 Start Trip
-              </button>
-            ) : (
-              <button onClick={endTrip}
-                className="flex-1 bg-gray-800 text-white font-bold py-4 rounded-2xl text-base shadow active:scale-95 transition-transform">
-                🏁 End Trip
-              </button>
-            )}
-          </div>
+        {/* Connect sensor */}
+        {!connected && (
+          <button onClick={connectBLE} className="btn-dark" style={{
+            width: '100%', padding: '13px', fontSize: 13,
+            border: 'none', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+          }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+            </svg>
+            Connect Sensor
+          </button>
+        )}
 
-          {!tripStarted && !tripEnded && (
-            <p className="text-xs text-gray-400 text-center">Tap Start Trip to begin — CoDriver will greet you</p>
-          )}
+        {/* Trip button */}
+        {!tripStarted ? (
+          <button onClick={startTrip} className="btn-red" style={{
+            width: '100%', padding: '16px', fontSize: 16,
+            border: 'none', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+          }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
+              <polygon points="5 3 19 12 5 21 5 3"/>
+            </svg>
+            Start Trip
+          </button>
+        ) : (
+          <button onClick={endTrip} className="btn-dark" style={{
+            width: '100%', padding: '16px', fontSize: 16,
+            border: '1px solid var(--border-2)', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+          }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+            </svg>
+            End Trip
+          </button>
+        )}
 
-          <ConversationPanel conversation={conversation} aiSpeaking={aiSpeaking}
-            listenMode={listenMode} micVolume={micVolume} tripStarted={tripStarted} />
-        </div>
+        {!tripStarted && !tripEnded && (
+          <p style={{ fontSize: 11, color: 'var(--text-3)', textAlign: 'center', letterSpacing: '0.3px' }}>
+            TAP TO BEGIN — CODRIVER WILL GREET YOU
+          </p>
+        )}
+
+        <ConversationPanel conversation={conversation} aiSpeaking={aiSpeaking}
+          listenMode={listenMode} micVolume={micVolume} tripStarted={tripStarted} />
       </div>
     </div>
   );

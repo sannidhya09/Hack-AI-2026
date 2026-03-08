@@ -1,77 +1,98 @@
-import { Wifi, WifiOff, Mic, MicOff } from "lucide-react";
 import WaveformBar from "./WaveformBar";
 
-// listenMode: "wake" = waiting for Nina, "active" = open 10s listen window
 export default function Header({ connected, aiSpeaking, micVolume, listenMode, tripStarted }) {
   return (
-    <div className="sticky top-0 z-40 bg-white border-b border-gray-100">
-      <div className="px-4 py-3 flex items-center justify-between">
+    <div style={{
+      position: 'sticky', top: 0, zIndex: 40,
+      background: 'rgba(15,15,15,0.92)',
+      backdropFilter: 'blur(20px)',
+      borderBottom: '1px solid rgba(255,255,255,0.07)',
+    }}>
+      <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
 
         {/* Logo */}
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 bg-red-600 rounded-xl flex items-center justify-center shadow-sm">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{
+            width: 34, height: 34,
+            background: 'var(--red)',
+            borderRadius: 10,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            boxShadow: '0 2px 12px var(--red-glow)',
+          }}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
               <path d="M12 2L3 7v10l9 5 9-5V7L12 2z" stroke="white" strokeWidth="2" strokeLinejoin="round"/>
               <path d="M12 12l9-5M12 12v10M12 12L3 7" stroke="white" strokeWidth="1.5"/>
             </svg>
           </div>
           <div>
-            <h1 className="text-lg font-800 text-gray-900 leading-none tracking-tight">
-              Co <span className="text-red-600">Driver</span>
-            </h1>
-            <p className="text-[10px] text-gray-400 leading-none mt-0.5">AI Co-Pilot</p>
+            <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--text-1)', lineHeight: 1, letterSpacing: '-0.5px' }}>
+              Co<span style={{ color: 'var(--red)' }}>Driver</span>
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2, letterSpacing: '0.5px', textTransform: 'uppercase' }}>AI Co-Pilot</div>
           </div>
         </div>
 
-        {/* Status Row */}
-        <div className="flex items-center gap-2">
+        {/* Status pills */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
 
-          {/* AI Speaking */}
+          {/* Speaking */}
           {aiSpeaking && (
-            <div className="flex items-center gap-1.5 bg-red-50 px-2.5 py-1.5 rounded-full">
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              background: 'rgba(232,50,26,0.12)',
+              border: '1px solid rgba(232,50,26,0.25)',
+              borderRadius: 20, padding: '5px 10px',
+            }}>
               <WaveformBar active={true} color="red" bars={8} />
-              <span className="text-[10px] font-600 text-red-600">Speaking</span>
+              <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--red)', letterSpacing: '0.3px' }}>SPEAKING</span>
             </div>
           )}
 
-          {/* Mic / Wake word status — only shown during a trip */}
+          {/* Mic state */}
           {!aiSpeaking && tripStarted && (
-            listenMode === "active" ? (
-              <div className="flex items-center gap-1.5 bg-green-50 px-2.5 py-1.5 rounded-full">
-                <Mic size={12} className="text-green-500" />
-                {micVolume > 20 && (
-                  <div className="flex gap-px items-end h-3">
-                    {[...Array(4)].map((_, i) => (
-                      <div key={i} className="w-px bg-green-400 rounded-full transition-all duration-75"
-                        style={{ height: `${Math.min(12, (micVolume / 60) * 12 * (0.5 + Math.random() * 0.5))}px` }} />
-                    ))}
-                  </div>
-                )}
-                <span className="text-[10px] font-600 text-green-600">Listening...</span>
+            listenMode === 'active' ? (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                background: 'rgba(34,197,94,0.1)',
+                border: '1px solid rgba(34,197,94,0.2)',
+                borderRadius: 20, padding: '5px 10px',
+              }}>
+                <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--green)' }} className="animate-pulse" />
+                <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--green)', letterSpacing: '0.3px' }}>LISTENING</span>
               </div>
             ) : (
-              <div className="flex items-center gap-1.5 bg-gray-50 px-2.5 py-1.5 rounded-full">
-                <MicOff size={12} className="text-gray-300" />
-                <span className="text-[10px] font-500 text-gray-400">Say "Nina"</span>
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                background: 'var(--surface-2)',
+                border: '1px solid var(--border)',
+                borderRadius: 20, padding: '5px 10px',
+              }}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--text-3)" strokeWidth="2">
+                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/>
+                </svg>
+                <span style={{ fontSize: 10, fontWeight: 500, color: 'var(--text-3)', letterSpacing: '0.3px' }}>SAY NINA</span>
               </div>
             )
           )}
 
-          {/* Hardware Sensor */}
-          <div className={`flex items-center gap-1 px-2 py-1.5 rounded-full ${
-            connected ? "bg-green-50" : "bg-gray-50"
-          }`}>
-            {connected ? (
-              <>
-                <Wifi size={12} className="text-green-500" />
-                <span className="text-[10px] font-500 text-green-600">Hardware</span>
-              </>
-            ) : (
-              <>
-                <WifiOff size={12} className="text-gray-300" />
-                <span className="text-[10px] font-500 text-gray-400">No Sensor</span>
-              </>
-            )}
+          {/* Hardware */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 5,
+            background: connected ? 'rgba(34,197,94,0.08)' : 'var(--surface-2)',
+            border: `1px solid ${connected ? 'rgba(34,197,94,0.2)' : 'var(--border)'}`,
+            borderRadius: 20, padding: '5px 10px',
+          }}>
+            <div style={{
+              width: 6, height: 6, borderRadius: '50%',
+              background: connected ? 'var(--green)' : 'var(--text-3)',
+            }} />
+            <span style={{
+              fontSize: 10, fontWeight: 500, letterSpacing: '0.3px',
+              color: connected ? 'var(--green)' : 'var(--text-3)',
+            }}>
+              {connected ? 'HARDWARE' : 'NO SENSOR'}
+            </span>
           </div>
 
         </div>

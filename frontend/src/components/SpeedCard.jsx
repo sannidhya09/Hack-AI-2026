@@ -1,39 +1,45 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, Navigation } from "lucide-react";
 
-const EVENT_LABELS = {
-  hard_brake:         { label: "Hard Brake", icon: "🛑", color: "red" },
-  hard_acceleration:  { label: "Hard Acceleration", icon: "⚡", color: "orange" },
-  sharp_turn_right:   { label: "Sharp Turn Right", icon: "↪️", color: "amber" },
-  sharp_turn_left:    { label: "Sharp Turn Left", icon: "↩️", color: "amber" },
-  swerve:             { label: "Swerving", icon: "〰️", color: "red" },
-  normal:             null,
+const EVENT_CONFIG = {
+  hard_brake:        { label: "Hard Brake",        color: '#E8321A', icon: 'brake' },
+  hard_acceleration: { label: "Hard Acceleration", color: '#F59E0B', icon: 'accel' },
+  sharp_turn_right:  { label: "Sharp Turn Right",  color: '#F59E0B', icon: 'turn' },
+  sharp_turn_left:   { label: "Sharp Turn Left",   color: '#F59E0B', icon: 'turn' },
+  swerve:            { label: "Swerving",           color: '#E8321A', icon: 'swerve' },
 };
 
+function EventIcon({ type }) {
+  if (type === 'brake') return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+      <circle cx="12" cy="12" r="10"/><path d="M8 12h8M12 8v8"/>
+    </svg>
+  );
+  if (type === 'accel') return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+      <path d="M12 19V5M5 12l7-7 7 7"/>
+    </svg>
+  );
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+      <path d="M3 12h18M15 6l6 6-6 6"/>
+    </svg>
+  );
+}
+
 export default function SpeedCard({ speedKmh, speedLimit, sensorData }) {
-  const [prevSpeed, setPrevSpeed] = useState(speedKmh);
-  const [speedDir, setSpeedDir]   = useState(null); // 'up' | 'down' | null
   const [showEvent, setShowEvent] = useState(false);
 
-  const speedLimitKmh = Math.round(speedLimit);
-  const speedLimitMph = Math.round(speedLimit / 1.60934);
   const speedMph      = Math.round(speedKmh / 1.60934);
-  const isSpeeding    = speedKmh > speedLimitKmh;
+  const speedLimitMph = Math.round(speedLimit / 1.60934);
+  const isSpeeding    = speedKmh > speedLimit + 2;
   const overage       = Math.max(0, speedMph - speedLimitMph);
-  const fillPct       = Math.min(100, (speedMph / (speedLimitMph * 1.4)) * 100);
+  const fillPct       = Math.min(100, (speedMph / Math.max(1, speedLimitMph * 1.4)) * 100);
 
-  const event = sensorData?.event;
-  const eventInfo = event ? EVENT_LABELS[event] : null;
-
-  useEffect(() => {
-    if (speedKmh > prevSpeed + 2) setSpeedDir("up");
-    else if (speedKmh < prevSpeed - 2) setSpeedDir("down");
-    else setSpeedDir(null);
-    setPrevSpeed(speedKmh);
-  }, [speedKmh]);
+  const event     = sensorData?.event;
+  const eventConf = event ? EVENT_CONFIG[event] : null;
 
   useEffect(() => {
-    if (eventInfo) {
+    if (eventConf) {
       setShowEvent(true);
       const t = setTimeout(() => setShowEvent(false), 3000);
       return () => clearTimeout(t);
@@ -41,90 +47,89 @@ export default function SpeedCard({ speedKmh, speedLimit, sensorData }) {
   }, [event]);
 
   return (
-    <div className={`rounded-3xl overflow-hidden shadow-sm border transition-all duration-300 ${
-      isSpeeding
-        ? 'border-red-200 bg-gradient-to-br from-red-50 to-white'
-        : 'border-gray-100 bg-white'
-    }`}>
-      <div className="p-5">
+    <div className="card" style={{ padding: '20px', overflow: 'hidden', position: 'relative' }}>
 
-        {/* Speed Numbers */}
-        <div className="flex items-end justify-between mb-4">
-          <div>
-            <div className="flex items-end gap-1.5">
-              <span className={`text-7xl font-900 leading-none tabular-nums transition-colors duration-300 ${
-                isSpeeding ? 'text-red-600 speed-over' : 'text-gray-900'
-              }`}>
-                {speedMph}
-              </span>
-              <div className="flex flex-col items-start mb-1.5 gap-0.5">
-                <span className="text-sm font-500 text-gray-400">mph</span>
-                {speedDir === "up" && (
-                  <span className="text-[10px] text-red-500 font-600 animate-fade-in">▲</span>
-                )}
-                {speedDir === "down" && (
-                  <span className="text-[10px] text-green-500 font-600 animate-fade-in">▼</span>
-                )}
-              </div>
-            </div>
+      {/* Subtle red glow when speeding */}
+      {isSpeeding && (
+        <div style={{
+          position: 'absolute', inset: 0, pointerEvents: 'none',
+          background: 'radial-gradient(ellipse at 50% 0%, rgba(232,50,26,0.08) 0%, transparent 70%)',
+        }} />
+      )}
+
+      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 16 }}>
+
+        {/* Speed */}
+        <div>
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6 }}>
+            <span className={`num ${isSpeeding ? 'speed-over' : ''}`} style={{
+              fontSize: 80, fontWeight: 500, lineHeight: 1,
+              color: isSpeeding ? 'var(--red)' : 'var(--text-1)',
+              letterSpacing: '-4px',
+              transition: 'color 0.3s ease',
+            }}>
+              {speedMph}
+            </span>
+            <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-3)', marginBottom: 10 }}>mph</span>
           </div>
-
-          {/* Speed Limit Badge */}
-          <div className={`flex flex-col items-center justify-center w-16 h-16 rounded-2xl border-2 transition-all ${
-            isSpeeding ? 'border-red-500 bg-red-600' : 'border-gray-200 bg-gray-50'
-          }`}>
-            <span className={`text-[10px] font-600 uppercase tracking-wide ${
-              isSpeeding ? 'text-red-100' : 'text-gray-400'
-            }`}>limit</span>
-            <span className={`text-xl font-800 leading-tight ${
-              isSpeeding ? 'text-white' : 'text-gray-700'
-            }`}>{speedLimitMph}</span>
-            <span className={`text-[9px] font-500 ${
-              isSpeeding ? 'text-red-100' : 'text-gray-400'
-            }`}>mph</span>
+          <div style={{ fontSize: 11, color: 'var(--text-3)', letterSpacing: '0.5px', marginTop: 2 }}>
+            {speedMph === 0 ? 'STATIONARY' : isSpeeding ? `${overage} MPH OVER LIMIT` : 'WITHIN LIMIT'}
           </div>
         </div>
 
-        {/* Speed Bar */}
-        <div className="relative h-2 bg-gray-100 rounded-full overflow-hidden mb-3">
-          <div
-            className={`absolute left-0 top-0 h-full rounded-full transition-all duration-500 ${
-              isSpeeding ? 'bg-red-500' : 'bg-green-400'
-            }`}
-            style={{ width: `${fillPct}%` }}
-          />
-          {/* Speed limit marker */}
-          <div
-            className="absolute top-0 h-full w-0.5 bg-gray-400 opacity-50"
-            style={{ left: `${(speedLimitMph / (speedLimitMph * 1.4)) * 100}%` }}
-          />
+        {/* Speed limit badge */}
+        <div style={{
+          width: 64, height: 64,
+          borderRadius: 16,
+          background: isSpeeding ? 'var(--red)' : 'var(--surface-2)',
+          border: `2px solid ${isSpeeding ? 'var(--red)' : 'var(--border-2)'}`,
+          display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center',
+          boxShadow: isSpeeding ? '0 4px 20px var(--red-glow)' : 'none',
+          transition: 'all 0.3s ease',
+        }}>
+          <span style={{ fontSize: 9, fontWeight: 600, color: isSpeeding ? 'rgba(255,255,255,0.6)' : 'var(--text-3)', letterSpacing: '0.5px' }}>LIMIT</span>
+          <span className="num" style={{ fontSize: 22, fontWeight: 500, color: isSpeeding ? '#fff' : 'var(--text-1)', lineHeight: 1.1 }}>{speedLimitMph}</span>
+          <span style={{ fontSize: 9, color: isSpeeding ? 'rgba(255,255,255,0.6)' : 'var(--text-3)' }}>mph</span>
         </div>
-
-        {/* Status */}
-        {isSpeeding ? (
-          <div className="flex items-center gap-2 bg-red-600 text-white rounded-2xl px-3 py-2 animate-fade-in">
-            <AlertTriangle size={14} />
-            <span className="text-xs font-600">
-              {overage} mph over the speed limit
-            </span>
-          </div>
-        ) : (
-          <div className="flex items-center gap-2 text-gray-400">
-            <Navigation size={12} />
-            <span className="text-xs font-400">
-              {speedMph === 0 ? "Stationary" : "Speed within limit"}
-            </span>
-          </div>
-        )}
-
-        {/* Driving Event Toast */}
-        {showEvent && eventInfo && (
-          <div className="mt-2 flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-2xl px-3 py-2 animate-slide-up">
-            <span className="text-sm">{eventInfo.icon}</span>
-            <span className="text-xs font-600 text-amber-700">{eventInfo.label} detected</span>
-          </div>
-        )}
       </div>
+
+      {/* Progress bar */}
+      <div style={{
+        height: 3, background: 'var(--surface-3)', borderRadius: 4,
+        overflow: 'hidden', position: 'relative', marginBottom: 4,
+      }}>
+        <div style={{
+          position: 'absolute', left: 0, top: 0, height: '100%',
+          width: `${fillPct}%`,
+          background: isSpeeding
+            ? 'linear-gradient(90deg, var(--red-deep), var(--red))'
+            : 'linear-gradient(90deg, #16a34a, var(--green))',
+          borderRadius: 4,
+          transition: 'width 0.4s ease, background 0.3s ease',
+        }} />
+        {/* Limit marker */}
+        <div style={{
+          position: 'absolute', top: 0, height: '100%', width: 2,
+          background: 'var(--text-3)', opacity: 0.4,
+          left: `${(speedLimitMph / (speedLimitMph * 1.4)) * 100}%`,
+        }} />
+      </div>
+
+      {/* Event toast */}
+      {showEvent && eventConf && (
+        <div className="animate-fade-in" style={{
+          marginTop: 12,
+          display: 'flex', alignItems: 'center', gap: 8,
+          background: `${eventConf.color}15`,
+          border: `1px solid ${eventConf.color}30`,
+          borderRadius: 10, padding: '8px 12px',
+          color: eventConf.color,
+        }}>
+          <EventIcon type={eventConf.icon} />
+          <span style={{ fontSize: 12, fontWeight: 600 }}>{eventConf.label} detected</span>
+        </div>
+      )}
     </div>
   );
 }

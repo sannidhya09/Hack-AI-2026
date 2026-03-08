@@ -2,93 +2,135 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --red:        #E8321A;
+  --red-deep:   #C4280F;
+  --red-glow:   rgba(232, 50, 26, 0.25);
+  --charcoal:   #0F0F0F;
+  --surface:    #181818;
+  --surface-2:  #222222;
+  --surface-3:  #2C2C2C;
+  --border:     rgba(255,255,255,0.07);
+  --border-2:   rgba(255,255,255,0.12);
+  --text-1:     #F5F5F5;
+  --text-2:     #A0A0A0;
+  --text-3:     #606060;
+  --green:      #22C55E;
+  --amber:      #F59E0B;
+}
+
 * {
   -webkit-tap-highlight-color: transparent;
   -webkit-touch-callout: none;
+  box-sizing: border-box;
 }
 
-body {
-  font-family: 'Inter', system-ui, sans-serif;
-  background: #ffffff;
-  color: #111827;
+html, body {
+  background: var(--charcoal);
+  color: var(--text-1);
+  font-family: 'DM Sans', sans-serif;
   overscroll-behavior: none;
+  -webkit-font-smoothing: antialiased;
 }
 
-/* Waveform animation */
+/* ── Waveform ── */
 @keyframes waveBar {
-  0%, 100% { transform: scaleY(0.3); }
-  50% { transform: scaleY(1); }
+  0%, 100% { transform: scaleY(0.25); }
+  50%       { transform: scaleY(1); }
 }
-
 .wave-bar {
-  animation: waveBar 0.6s ease-in-out infinite;
+  animation: waveBar 0.65s ease-in-out infinite;
   transform-origin: bottom;
 }
+.wave-bar:nth-child(1)  { animation-delay: 0s; }
+.wave-bar:nth-child(2)  { animation-delay: 0.07s; }
+.wave-bar:nth-child(3)  { animation-delay: 0.14s; }
+.wave-bar:nth-child(4)  { animation-delay: 0.21s; }
+.wave-bar:nth-child(5)  { animation-delay: 0.28s; }
+.wave-bar:nth-child(6)  { animation-delay: 0.35s; }
+.wave-bar:nth-child(7)  { animation-delay: 0.42s; }
+.wave-bar:nth-child(8)  { animation-delay: 0.35s; }
+.wave-bar:nth-child(9)  { animation-delay: 0.28s; }
+.wave-bar:nth-child(10) { animation-delay: 0.21s; }
+.wave-bar:nth-child(11) { animation-delay: 0.14s; }
+.wave-bar:nth-child(12) { animation-delay: 0.07s; }
 
-.wave-bar:nth-child(1) { animation-delay: 0s; }
-.wave-bar:nth-child(2) { animation-delay: 0.08s; }
-.wave-bar:nth-child(3) { animation-delay: 0.16s; }
-.wave-bar:nth-child(4) { animation-delay: 0.24s; }
-.wave-bar:nth-child(5) { animation-delay: 0.32s; }
-.wave-bar:nth-child(6) { animation-delay: 0.4s; }
-.wave-bar:nth-child(7) { animation-delay: 0.48s; }
-.wave-bar:nth-child(8) { animation-delay: 0.4s; }
-.wave-bar:nth-child(9) { animation-delay: 0.32s; }
-.wave-bar:nth-child(10) { animation-delay: 0.24s; }
-.wave-bar:nth-child(11) { animation-delay: 0.16s; }
-.wave-bar:nth-child(12) { animation-delay: 0.08s; }
-
-/* Mic pulse */
-@keyframes micPulse {
-  0% { box-shadow: 0 0 0 0 rgba(229, 57, 53, 0.4); }
-  70% { box-shadow: 0 0 0 12px rgba(229, 57, 53, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(229, 57, 53, 0); }
-}
-
-.mic-pulse {
-  animation: micPulse 1.5s ease-out infinite;
-}
-
-/* Crash alert pulse */
+/* ── Crash ── */
 @keyframes crashPulse {
-  0%, 100% { background-color: #E53935; }
-  50% { background-color: #b71c1c; }
+  0%, 100% { background-color: #C4280F; }
+  50%       { background-color: #E8321A; }
 }
+.crash-bg { animation: crashPulse 0.7s ease-in-out infinite; }
 
-.crash-bg {
-  animation: crashPulse 0.8s ease-in-out infinite;
-}
-
-/* Speed needle */
+/* ── Speed glow ── */
 @keyframes speedGlow {
-  0%, 100% { filter: drop-shadow(0 0 4px rgba(229, 57, 53, 0.6)); }
-  50% { filter: drop-shadow(0 0 12px rgba(229, 57, 53, 1)); }
+  0%, 100% { text-shadow: 0 0 20px rgba(232,50,26,0.5); }
+  50%       { text-shadow: 0 0 40px rgba(232,50,26,0.9), 0 0 80px rgba(232,50,26,0.3); }
 }
+.speed-over { animation: speedGlow 1.2s ease-in-out infinite; }
 
-.speed-over {
-  animation: speedGlow 1s ease-in-out infinite;
+/* ── Fade in ── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
+.animate-fade-in  { animation: fadeIn 0.25s ease forwards; }
 
-/* Smooth number transitions */
-.number-transition {
-  transition: all 0.3s ease;
+/* ── Slide up ── */
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
+.animate-slide-up { animation: slideUp 0.3s cubic-bezier(0.16,1,0.3,1) forwards; }
 
-/* Card hover */
-.stat-card {
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+/* ── Ping ── */
+@keyframes ping {
+  75%, 100% { transform: scale(2); opacity: 0; }
 }
+.animate-ping { animation: ping 1s cubic-bezier(0,0,0.2,1) infinite; }
 
-.stat-card:active {
-  transform: scale(0.97);
+/* ── Pulse ── */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
 }
+.animate-pulse { animation: pulse 2s cubic-bezier(0.4,0,0.6,1) infinite; }
 
-/* Scrollbar */
-::-webkit-scrollbar { width: 3px; }
+/* ── Scrollbar ── */
+::-webkit-scrollbar       { width: 2px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 10px; }
+::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 10px; }
 
-/* Safe area for notched phones */
-.safe-bottom {
-  padding-bottom: env(safe-area-inset-bottom, 16px);
+/* ── Mono numbers ── */
+.num { font-family: 'DM Mono', monospace; }
+
+/* ── Card base ── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
 }
+
+/* ── Red glow button ── */
+.btn-red {
+  background: var(--red);
+  color: #fff;
+  font-weight: 600;
+  border-radius: 16px;
+  transition: all 0.15s ease;
+  box-shadow: 0 4px 24px var(--red-glow);
+}
+.btn-red:active { transform: scale(0.97); box-shadow: 0 2px 12px var(--red-glow); }
+
+.btn-dark {
+  background: var(--surface-2);
+  color: var(--text-1);
+  font-weight: 600;
+  border-radius: 16px;
+  border: 1px solid var(--border-2);
+  transition: all 0.15s ease;
+}
+.btn-dark:active { transform: scale(0.97); }
+
+/* ── Safe area ── */
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom, 16px); }
