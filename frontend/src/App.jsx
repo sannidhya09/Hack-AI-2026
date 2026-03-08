@@ -11,8 +11,11 @@ import MusicModal from "./components/MusicModal";
 
 axios.defaults.timeout = 55000;
 
-const ESP32_WS       = import.meta.env.VITE_ESP32_WS || "ws://192.168.4.1:81";
 const BACKEND        = import.meta.env.VITE_BACKEND_URL || "";
+
+// BLE UUIDs — must match CoDriver_BLE.ino exactly
+const BLE_SERVICE_UUID        = "12345678-1234-1234-1234-123456789abc";
+const BLE_CHARACTERISTIC_UUID = "abcdefab-cdef-abcd-efab-cdefabcdefab";
 const SPEED_WARN_MS  = 30000;
 const PROACTIVE_MS   = 300000;
 const EVENT_COOL_MS  = 12000;
@@ -81,8 +84,8 @@ export default function App() {
   useEffect(() => { live.current.tripStarted  = tripStarted;   }, [tripStarted]);
   useEffect(() => { live.current.listenMode   = listenMode;    }, [listenMode]);
 
-  const wsRef            = useRef(null);
-  const wsRetryRef       = useRef(null);
+  const bleDeviceRef     = useRef(null);
+  const bleCharRef       = useRef(null);
   const lastPosRef       = useRef(null);
   const speedHistoryRef  = useRef([]);
   const prevSpeedRef     = useRef(0);
@@ -135,6 +138,8 @@ export default function App() {
     }
     setAudioStarted(true);
     live.current.audioStarted = true;
+    // Start BLE inside the same user gesture — required by Web Bluetooth API
+    connectBLE();
   };
 
   // ─── Audio Playback ───────────────────────────────
@@ -224,51 +229,85 @@ export default function App() {
     return () => navigator.geolocation.clearWatch(watchId);
   }, []);
 
-  // ─── WebSocket ────────────────────────────────────
-  const connectWSRef = useRef(null);
-  connectWSRef.current = function connectWS() {
-    clearTimeout(wsRetryRef.current);
+  // ─── BLE ─────────────────────────────────────────
+  // Called once inside the "Start CoDriver" button tap (user gesture required)
+  const connectBLE = async () => {
+    if (!navigator.bluetooth) {
+      console.warn("Web Bluetooth not supported on this browser");
+      return;
+    }
     try {
-      const ws = new WebSocket(ESP32_WS);
-      wsRef.current = ws;
-      ws.onopen  = () => setConnected(true);
-      ws.onclose = () => {
+      const device = await navigator.bluetooth.requestDevice({
+        filters: [{ name: "CoDriver" }],
+        optionalServices: [BLE_SERVICE_UUID],
+      });
+      bleDeviceRef.current = device;
+
+      device.addEventListener("gattserverdisconnected", () => {
         setConnected(false);
-        wsRetryRef.current = setTimeout(() => connectWSRef.current(), 3000);
-      };
-      ws.onerror = () => ws.close();
-      ws.onmessage = (e) => {
-        try {
-          const data = JSON.parse(e.data);
-          if (data.accelX !== undefined || data.event !== undefined || data.hardBrakes !== undefined) {
-            const ax = parseFloat(data.accelX) || 0;
-            const ay = parseFloat(data.accelY) || 0;
-            const az = parseFloat(data.accelZ) || 0;
-            const gForce = parseFloat(Math.sqrt(ax*ax + ay*ay + az*az).toFixed(2));
-            const hb = parseInt(data.hardBrakes) || 0;
-            const st = parseInt(data.sharpTurns) || 0;
-            const ha = parseInt(data.hardAccels) || 0;
-            const evt = data.event || "normal";
-            setHardBrakes(hb); setSharpTurns(st); setHardAccels(ha); setCurrentGForce(gForce);
-            live.current.hardBrakes = hb; live.current.sharpTurns = st;
-            live.current.hardAccels = ha; live.current.gForce = gForce;
-            live.current.currentEvent = evt;
-            setSensorData({ event: evt, accelX: ax, accelY: ay, accelZ: az,
-              gyroX: parseFloat(data.gyroX)||0, gyroY: parseFloat(data.gyroY)||0,
-              gyroZ: parseFloat(data.gyroZ)||0, hardBrakes: hb, sharpTurns: st,
-              hardAccels: ha, gForce, audioLevel: parseFloat(data.audioLevel)||0 });
-          }
-        } catch {}
-      };
-    } catch {
-      wsRetryRef.current = setTimeout(() => connectWSRef.current(), 3000);
+        // Auto-reconnect after 2s
+        setTimeout(() => reconnectBLE(), 2000);
+      });
+
+      await connectGATT(device);
+    } catch (e) {
+      console.warn("BLE connect error:", e.message);
     }
   };
 
-  useEffect(() => {
-    connectWSRef.current();
-    return () => { clearTimeout(wsRetryRef.current); wsRef.current?.close(); };
-  }, []);
+  const connectGATT = async (device) => {
+    try {
+      const server  = await device.gatt.connect();
+      const service = await server.getPrimaryService(BLE_SERVICE_UUID);
+      const char    = await service.getCharacteristic(BLE_CHARACTERISTIC_UUID);
+      bleCharRef.current = char;
+
+      await char.startNotifications();
+      char.addEventListener("characteristicvaluechanged", handleBLEData);
+      setConnected(true);
+      console.log("✅ BLE connected to CoDriver");
+    } catch (e) {
+      console.warn("GATT connect error:", e.message);
+      setConnected(false);
+    }
+  };
+
+  const reconnectBLE = async () => {
+    const device = bleDeviceRef.current;
+    if (!device) return;
+    try {
+      await connectGATT(device);
+    } catch {
+      setTimeout(() => reconnectBLE(), 3000);
+    }
+  };
+
+  const handleBLEData = (e) => {
+    try {
+      const raw  = new TextDecoder().decode(e.target.value);
+      const data = JSON.parse(raw);
+      const ax = parseFloat(data.accelX) || 0;
+      const ay = parseFloat(data.accelY) || 0;
+      const az = parseFloat(data.accelZ) || 0;
+      const gForce = parseFloat(Math.sqrt(ax*ax + ay*ay + az*az).toFixed(2));
+      const hb  = parseInt(data.hardBrakes) || 0;
+      const st  = parseInt(data.sharpTurns) || 0;
+      const ha  = parseInt(data.hardAccels) || 0;
+      const evt = data.event || "normal";
+      setHardBrakes(hb); setSharpTurns(st); setHardAccels(ha); setCurrentGForce(gForce);
+      live.current.hardBrakes  = hb;
+      live.current.sharpTurns  = st;
+      live.current.hardAccels  = ha;
+      live.current.gForce      = gForce;
+      live.current.currentEvent = evt;
+      setSensorData({
+        event: evt, accelX: ax, accelY: ay, accelZ: az,
+        gyroX: parseFloat(data.gyroX)||0, gyroY: parseFloat(data.gyroY)||0,
+        gyroZ: parseFloat(data.gyroZ)||0, hardBrakes: hb, sharpTurns: st,
+        hardAccels: ha, gForce, audioLevel: parseFloat(data.audioLevel)||0
+      });
+    } catch {}
+  };
 
   // ─── Voice Recognition ────────────────────────────
   // Runs continuously but only acts on speech if:
