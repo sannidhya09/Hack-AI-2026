@@ -3,23 +3,23 @@ import { MapPin } from "lucide-react";
 
 const EMOTION_CONFIG = {
   neutral:  { emoji: "😐", label: "Focused",  color: "text-gray-600",  bg: "bg-gray-100" },
-  happy:    { emoji: "😊", label: "Happy",    color: "text-green-600", bg: "bg-green-50" },
-  tired:    { emoji: "😴", label: "Tired",    color: "text-orange-600", bg: "bg-orange-50" },
-  stressed: { emoji: "😰", label: "Stressed", color: "text-red-600",   bg: "bg-red-50" },
+  happy:    { emoji: "😊", label: "Happy",     color: "text-green-600", bg: "bg-green-50" },
+  sad:      { emoji: "😔", label: "Sad",       color: "text-blue-600",  bg: "bg-blue-50" },
+  sleeping: { emoji: "😴", label: "Drowsy",    color: "text-red-600",   bg: "bg-red-50" },
 };
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL || "";
-const SCAN_INTERVAL_MS = 30000; // scan every 30s — conservative API usage
+const SCAN_INTERVAL_MS = 60000; // every 60s — keeps it completely out of AI response path
 
 export default function DriverStatus({ emotion, setEmotion, gps }) {
   const videoRef    = useRef(null);
   const canvasRef   = useRef(null);
   const intervalRef = useRef(null);
+  const scanningRef = useRef(false); // use ref not state to avoid re-render blocking
 
-  const [camReady,   setCamReady]   = useState(false);
-  const [scanning,   setScanning]   = useState(false);
-  const [lastScan,   setLastScan]   = useState(null); // time of last scan
-  const [countdown,  setCountdown]  = useState(null); // seconds until next scan
+  const [camReady,  setCamReady]  = useState(false);
+  const [scanning,  setScanning]  = useState(false);
+  const [lastScan,  setLastScan]  = useState(null);
 
   const cfg = EMOTION_CONFIG[emotion] || EMOTION_CONFIG.neutral;
 
@@ -29,12 +29,14 @@ export default function DriverStatus({ emotion, setEmotion, gps }) {
     async function startCamera() {
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "user", width: 320, height: 240 }
+          // Higher resolution so Gemini can actually read facial features
+          video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }
         });
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          setCamReady(true);
-        }
+        const video = videoRef.current;
+        if (!video) return;
+        video.srcObject = stream;
+        // Wait for video to be genuinely ready — not just srcObject assigned
+        video.onloadeddata = () => setCamReady(true);
       } catch (e) {
         console.warn("Camera error:", e.message);
       }
@@ -46,66 +48,64 @@ export default function DriverStatus({ emotion, setEmotion, gps }) {
     };
   }, []);
 
-  // ─── Countdown timer (UI only) ────────────────
+  // ─── Scan loop — starts only when camera is genuinely ready ───
   useEffect(() => {
     if (!camReady) return;
-    // First scan after 3s
-    const firstScan = setTimeout(() => analyzeEmotion(), 3000);
-    // Then every 30s
+    // First scan after 5s to let camera warm up and exposure settle
+    const firstScan = setTimeout(() => analyzeEmotion(), 5000);
     intervalRef.current = setInterval(() => analyzeEmotion(), SCAN_INTERVAL_MS);
-
-    // Countdown display — updates every second
-    let nextScanAt = Date.now() + 3000;
-    const countdownTick = setInterval(() => {
-      const secs = Math.max(0, Math.round((nextScanAt - Date.now()) / 1000));
-      setCountdown(secs);
-      if (secs === 0) nextScanAt = Date.now() + SCAN_INTERVAL_MS;
-    }, 1000);
-
     return () => {
       clearTimeout(firstScan);
       clearInterval(intervalRef.current);
-      clearInterval(countdownTick);
     };
   }, [camReady]);
 
-  // ─── Capture frame → base64 JPEG ──────────────
+  // ─── Capture frame ────────────────────────────
   const captureFrame = () => {
     const video  = videoRef.current;
     const canvas = canvasRef.current;
-    if (!video || !canvas || video.readyState < 2) return null;
-    canvas.width  = 320;
-    canvas.height = 240;
+    // readyState 4 = HAVE_ENOUGH_DATA — video is fully rendering
+    if (!video || !canvas || video.readyState < 4) return null;
+
+    const W = video.videoWidth  || 640;
+    const H = video.videoHeight || 480;
+    canvas.width  = W;
+    canvas.height = H;
+
     const ctx = canvas.getContext("2d");
-    // Mirror flip so it matches what user sees
-    ctx.translate(320, 0);
-    ctx.scale(-1, 1);
-    ctx.drawImage(video, 0, 0, 320, 240);
-    // Return base64 without data URL prefix
-    return canvas.toDataURL("image/jpeg", 0.7).split(",")[1];
+    // CRITICAL: reset transform before every draw — otherwise transforms accumulate
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    // Draw video normally (no mirror — Gemini doesn't need it mirrored)
+    ctx.drawImage(video, 0, 0, W, H);
+
+    // JPEG at 0.85 quality — better than 0.7 for face detection accuracy
+    return canvas.toDataURL("image/jpeg", 0.85).split(",")[1];
   };
 
-  // ─── Call backend /api/emotion ────────────────
+  // ─── Emotion scan — one frame, one call, skip if unclear ────
   const analyzeEmotion = async () => {
-    if (scanning) return;
+    if (scanningRef.current) return;
     const frame = captureFrame();
     if (!frame) return;
 
+    scanningRef.current = true;
     setScanning(true);
     try {
       const res = await fetch(`${BACKEND}/api/emotion`, {
-        method: "POST",
+        method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image: frame }),
+        body:    JSON.stringify({ image: frame }),
       });
       const data = await res.json();
       if (data.emotion) {
         setEmotion(data.emotion);
         setLastScan(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
       }
+      // data.skipped = true means face was unclear — keep previous emotion silently
     } catch (e) {
       console.warn("Emotion scan error:", e.message);
     } finally {
+      scanningRef.current = false;
       setScanning(false);
     }
   };
@@ -146,29 +146,24 @@ export default function DriverStatus({ emotion, setEmotion, gps }) {
           {/* Status badge */}
           {camReady && (
             <div className={`absolute top-2 right-2 px-2 py-1 rounded-lg text-[10px] font-600 ${
-              scanning
-                ? "bg-yellow-500 text-white"
-                : "bg-black bg-opacity-50 text-white"
+              scanning ? "bg-yellow-500 text-white" : "bg-black bg-opacity-50 text-white"
             }`}>
-              {scanning
-                ? "● Scanning..."
-                : lastScan
-                  ? `✓ ${lastScan}`
-                  : countdown !== null
-                    ? `Next scan in ${countdown}s`
-                    : "● AI Vision"}
+              {scanning ? "● Scanning..." : lastScan ? `✓ ${lastScan}` : "● AI Vision"}
             </div>
           )}
 
-          {/* Alert overlay */}
-          {(emotion === "tired" || emotion === "stressed") && (
-            <div className={`absolute bottom-0 left-0 right-0 py-2 px-3 ${
-              emotion === "stressed" ? "bg-red-600" : "bg-orange-500"
-            } bg-opacity-90`}>
+          {/* Drowsy alert */}
+          {emotion === "sleeping" && (
+            <div className="absolute bottom-0 left-0 right-0 py-2 px-3 bg-red-600 bg-opacity-90">
               <p className="text-white text-xs font-600 text-center">
-                {emotion === "tired"
-                  ? "😴 Fatigue detected — consider a break"
-                  : "😰 Stress detected — take a breath"}
+                😴 Drowsiness detected — please stay alert!
+              </p>
+            </div>
+          )}
+          {emotion === "sad" && (
+            <div className="absolute bottom-0 left-0 right-0 py-2 px-3 bg-blue-600 bg-opacity-90">
+              <p className="text-white text-xs font-600 text-center">
+                😔 You seem down — CoDriver is here with you
               </p>
             </div>
           )}
