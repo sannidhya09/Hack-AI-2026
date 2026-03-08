@@ -108,6 +108,7 @@ export default function App() {
     clearTimeout(wakeWindowRef.current);
     setListenMode("active");
     live.current.listenMode = "active";
+    live.current.listenModeActive = true;
     wakeWindowRef.current = setTimeout(() => {
       setListenMode("wake");
       live.current.listenMode = "wake";
@@ -119,6 +120,28 @@ export default function App() {
     clearTimeout(wakeWindowRef.current);
     setListenMode("wake");
     live.current.listenMode = "wake";
+    live.current.listenModeActive = false;
+  };
+
+  const stopNina = () => {
+    // Stop speaking
+    try {
+      const pa = persistentAudio.current;
+      if (pa) { pa.pause(); pa.currentTime = 0; }
+    } catch {}
+    setAiSpeaking(false);
+    live.current.aiSpeaking = false;
+    // Close listen window
+    closeListenWindow();
+  };
+
+  const askNina = () => {
+    // Manually open listen window — same as saying "Nina"
+    if (!live.current.tripStarted) return;
+    if (live.current.aiSpeaking) stopNina();
+    openListenWindow();
+    // Restart recognition if needed
+    setTimeout(() => { try { recognitionRef.current?.start(); } catch {} }, 100);
   };
 
   // ─── iOS Audio Unlock ─────────────────────────────
@@ -317,7 +340,7 @@ export default function App() {
     if (!SR) return;
     const rec = new SR();
     rec.continuous      = true;
-    rec.interimResults  = false;
+    rec.interimResults  = true;   // catch Nina mid-utterance, not just at end
     rec.lang            = "en-US";
 
     rec.onstart = () => {};
@@ -333,7 +356,9 @@ export default function App() {
     };
 
     rec.onresult = (e) => {
-      const text = e.results[e.results.length - 1][0].transcript.trim();
+      const result   = e.results[e.results.length - 1];
+      const isFinal  = result.isFinal;
+      const text     = result[0].transcript.trim();
       if (!text || text.length < 2) return;
       if (!live.current.tripStarted) return;
 
@@ -341,8 +366,8 @@ export default function App() {
       const hasWakeWord = lower.includes(WAKE_WORD);
 
       if (live.current.listenMode === "active") {
-        // Active window — send everything to the AI
-        // Strip the wake word if it leads the sentence (e.g. "Nina how fast am I going")
+        // Only send on final results to avoid sending partial speech
+        if (!isFinal) return;
         const cleaned = hasWakeWord
           ? text.replace(new RegExp(WAKE_WORD, "gi"), "").trim()
           : text;
@@ -351,15 +376,15 @@ export default function App() {
           handleDriverSpoke(cleaned);
         }
       } else {
-        // Wake mode — only act if Nina is in the transcript
+        // Wake mode — act on interim OR final that contains "nina"
         if (hasWakeWord) {
           const cleaned = text.replace(new RegExp(WAKE_WORD, "gi"), "").trim();
-          if (cleaned.length > 1) {
+          if (cleaned.length > 1 && isFinal) {
             // Wake word + question in one breath — send immediately
             closeListenWindow();
             handleDriverSpoke(cleaned);
-          } else {
-            // Just "Nina" — open the listen window and wait
+          } else if (!live.current.listenModeActive) {
+            // Just "Nina" heard (interim or final) — open the listen window
             openListenWindow();
           }
         }
@@ -648,7 +673,8 @@ export default function App() {
         )}
 
         <ConversationPanel conversation={conversation} aiSpeaking={aiSpeaking}
-          listenMode={listenMode} micVolume={micVolume} tripStarted={tripStarted} />
+          listenMode={listenMode} micVolume={micVolume} tripStarted={tripStarted}
+          onStop={stopNina} onAsk={askNina} />
       </div>
     </div>
   );
