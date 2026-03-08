@@ -138,8 +138,6 @@ export default function App() {
     }
     setAudioStarted(true);
     live.current.audioStarted = true;
-    // Start BLE inside the same user gesture — required by Web Bluetooth API
-    connectBLE();
   };
 
   // ─── Audio Playback ───────────────────────────────
@@ -549,7 +547,11 @@ export default function App() {
           className="w-full bg-red-600 text-white font-bold py-5 rounded-3xl text-xl shadow-lg active:scale-95 transition-transform">
           Start CoDriver 🚗
         </button>
-        <p className="text-xs text-gray-300 mt-4 text-center">Tap to enable voice & audio</p>
+        <button onClick={connectBLE}
+          className="w-full bg-gray-800 text-white font-bold py-4 rounded-3xl text-base shadow active:scale-95 transition-transform mt-3">
+          Connect Sensor 📡
+        </button>
+        <p className="text-xs text-gray-300 mt-4 text-center">Tap Start first, then Connect Sensor</p>
       </div>
     );
   }
