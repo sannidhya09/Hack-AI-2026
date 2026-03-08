@@ -280,7 +280,7 @@ Respond as CoDriver:"""
             config=types.GenerateContentConfig(
                 temperature=0.85,
                 top_p=0.95,
-                max_output_tokens=1000,
+                max_output_tokens=700,
                 # Thinking enabled — gives smarter, more natural conversational responses
             )
         )
