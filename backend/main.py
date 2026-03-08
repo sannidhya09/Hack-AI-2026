@@ -33,6 +33,10 @@ gemini_client = genai.Client(api_key=GEMINI_KEY)
 
 # ─── In-memory trip state (resets on redeploy, fine for a demo) ──
 conversation_history: List[str] = []   # full trip conversation
+
+# ─── Location context cache — refreshed every 60s not every call ──
+_loc_cache: dict = {"ts": 0, "location": "", "weather": "", "speed_limit": 0}
+LOC_CACHE_TTL = 60  # seconds
 trip_events: List[dict] = []           # driving events logged this trip
 trip_active: bool = False
 trip_start_time: Optional[str] = None
@@ -240,10 +244,10 @@ async def get_ai_response(req: AnalyzeRequest, speed_limit_kmh: int, location_na
     speeding_str = f"OVER LIMIT by {speed_mph - speed_limit_mph} mph" if speed_mph > speed_limit_mph else "within limit"
 
     emotion_context = {
-        "neutral": "alert and focused",
-        "happy":   "smiling, in a good mood",
-        "tired":   "droopy eyes, looks fatigued",
-        "stressed":"tense, looks stressed or anxious",
+        "neutral":  "alert and focused",
+        "happy":    "smiling, in a good mood",
+        "sad":      "looks sad or upset — something may be bothering them",
+        "sleeping": "eyes nearly closed or closed — drowsy, dangerous",
     }.get(req.emotion, req.emotion)
 
     situation = f"""RIGHT NOW IN THE CAR:
@@ -277,6 +281,7 @@ Respond as CoDriver:"""
                 temperature=0.85,
                 top_p=0.95,
                 max_output_tokens=1000,
+                # Thinking enabled — gives smarter, more natural conversational responses
             )
         )
         reply = response.text.strip()
@@ -426,6 +431,14 @@ async def crash_detection(data: dict):
 class EmotionRequest(BaseModel):
     image: str
 
+EMOTION_PROMPT = (
+    "Look at this driver face. Respond with exactly ONE word.\n"
+    "Only respond if you can clearly see the face and eyes.\n"
+    "neutral / happy / sad / sleeping / unsure\n"
+    "unsure = face not visible, blurry, or you are not confident.\n"
+    "ONE WORD ONLY."
+)
+
 @app.post("/api/emotion")
 async def detect_emotion(req: EmotionRequest):
     try:
@@ -433,24 +446,26 @@ async def detect_emotion(req: EmotionRequest):
             data=base64.b64decode(req.image),
             mime_type="image/jpeg"
         )
-        text_prompt = (
-            "Look at this driver's face. Respond with exactly ONE word — "
-            "neutral, happy, tired, or stressed. "
-            "If no face visible: neutral"
-        )
         response = gemini_client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=[image_part, text_prompt],
-            config=types.GenerateContentConfig(temperature=0.1, max_output_tokens=5)
+            contents=[image_part, EMOTION_PROMPT],
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                max_output_tokens=5,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+            )
         )
-        raw = response.text.strip().lower().split()[0]
-        valid = {"neutral", "happy", "tired", "stressed"}
-        emotion = raw if raw in valid else "neutral"
-        logging.info(f"Emotion detected: {emotion}")
-        return {"emotion": emotion}
+        raw = "".join(c for c in response.text.strip().lower() if c.isalpha())
+        valid = {"neutral", "happy", "sad", "sleeping"}
+        if raw not in valid:
+            # unsure or unrecognised — skip, keep previous emotion on frontend
+            logging.info(f"Emotion scan skipped: model returned '{raw}'")
+            return {"emotion": None, "skipped": True}
+        logging.info(f"Emotion detected: {raw}")
+        return {"emotion": raw}
     except Exception as e:
         logging.error(f"Emotion detection error: {e}")
-        return {"emotion": "neutral"}
+        return {"emotion": None, "skipped": True}
 
 @app.get("/api/health")
 async def health():
