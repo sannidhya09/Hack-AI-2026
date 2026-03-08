@@ -1,0 +1,94 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+}
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background: #ffffff;
+  color: #111827;
+  overscroll-behavior: none;
+}
+
+/* Waveform animation */
+@keyframes waveBar {
+  0%, 100% { transform: scaleY(0.3); }
+  50% { transform: scaleY(1); }
+}
+
+.wave-bar {
+  animation: waveBar 0.6s ease-in-out infinite;
+  transform-origin: bottom;
+}
+
+.wave-bar:nth-child(1) { animation-delay: 0s; }
+.wave-bar:nth-child(2) { animation-delay: 0.08s; }
+.wave-bar:nth-child(3) { animation-delay: 0.16s; }
+.wave-bar:nth-child(4) { animation-delay: 0.24s; }
+.wave-bar:nth-child(5) { animation-delay: 0.32s; }
+.wave-bar:nth-child(6) { animation-delay: 0.4s; }
+.wave-bar:nth-child(7) { animation-delay: 0.48s; }
+.wave-bar:nth-child(8) { animation-delay: 0.4s; }
+.wave-bar:nth-child(9) { animation-delay: 0.32s; }
+.wave-bar:nth-child(10) { animation-delay: 0.24s; }
+.wave-bar:nth-child(11) { animation-delay: 0.16s; }
+.wave-bar:nth-child(12) { animation-delay: 0.08s; }
+
+/* Mic pulse */
+@keyframes micPulse {
+  0% { box-shadow: 0 0 0 0 rgba(229, 57, 53, 0.4); }
+  70% { box-shadow: 0 0 0 12px rgba(229, 57, 53, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(229, 57, 53, 0); }
+}
+
+.mic-pulse {
+  animation: micPulse 1.5s ease-out infinite;
+}
+
+/* Crash alert pulse */
+@keyframes crashPulse {
+  0%, 100% { background-color: #E53935; }
+  50% { background-color: #b71c1c; }
+}
+
+.crash-bg {
+  animation: crashPulse 0.8s ease-in-out infinite;
+}
+
+/* Speed needle */
+@keyframes speedGlow {
+  0%, 100% { filter: drop-shadow(0 0 4px rgba(229, 57, 53, 0.6)); }
+  50% { filter: drop-shadow(0 0 12px rgba(229, 57, 53, 1)); }
+}
+
+.speed-over {
+  animation: speedGlow 1s ease-in-out infinite;
+}
+
+/* Smooth number transitions */
+.number-transition {
+  transition: all 0.3s ease;
+}
+
+/* Card hover */
+.stat-card {
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.stat-card:active {
+  transform: scale(0.97);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 3px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 10px; }
+
+/* Safe area for notched phones */
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 16px);
+}
