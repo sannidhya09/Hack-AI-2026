@@ -31,7 +31,7 @@ ELEVENLABS_KEY = os.getenv("ELEVENLABS_API_KEY")
 MONGODB_URI    = os.getenv("MONGODB_URI")
 VOICE_ID       = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 
-# ─── Gemini (new SDK) ──────────────────────────────
+# ─── Gemini ────────────────────────────────────────
 gemini_client = genai.Client(api_key=GEMINI_KEY)
 
 # ─── MongoDB ───────────────────────────────────────
@@ -44,7 +44,7 @@ if MONGODB_URI and MONGODB_URI != "your_mongodb_uri":
     except Exception as e:
         logging.warning(f"MongoDB not available: {e}")
 
-# ─── Conversation State ────────────────────────────
+# ─── Conversation History (per session) ───────────
 conversation_history = []
 
 # ─── Models ───────────────────────────────────────
@@ -68,9 +68,8 @@ class TripSummaryRequest(BaseModel):
     maxSpeed: float
 
 # ─────────────────────────────────────────────────────
-#  SPEED LIMIT — OpenStreetMap (free, no billing)
+#  SPEED LIMIT — OpenStreetMap
 # ─────────────────────────────────────────────────────
-
 async def get_speed_limit(lat: float, lng: float) -> int:
     try:
         query = f"""
@@ -98,14 +97,13 @@ async def get_speed_limit(lat: float, lng: float) -> int:
     return 56  # default 35mph in kmh
 
 # ─────────────────────────────────────────────────────
-#  ELEVENLABS TTS — Low Latency
+#  ELEVENLABS TTS
 # ─────────────────────────────────────────────────────
-
 async def text_to_speech(text: str) -> str:
     if not ELEVENLABS_KEY or ELEVENLABS_KEY == "your_elevenlabs_key":
         return ""
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=15) as client:
             r = await client.post(
                 f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}/stream",
                 headers={
@@ -115,7 +113,7 @@ async def text_to_speech(text: str) -> str:
                 },
                 json={
                     "text": text,
-                    "model_id": "eleven_turbo_v2",
+                    "model_id": "eleven_multilingual_v2",
                     "voice_settings": {
                         "stability": 0.5,
                         "similarity_boost": 0.75,
@@ -137,24 +135,29 @@ async def text_to_speech(text: str) -> str:
 #  GEMINI AI BRAIN
 # ─────────────────────────────────────────────────────
 
-CODRIVER_PERSONA = """You are CoDriver — a calm, warm, intelligent AI co-pilot.
-You ride along with drivers and care about their safety and wellbeing.
+CODRIVER_PERSONA = """You are CoDriver — a calm, warm, intelligent AI co-pilot built into a car.
+You ride along with drivers and genuinely care about their safety and wellbeing.
 You speak like a trusted friend who happens to know everything about driving.
 
-VOICE RULES (critical — you are being read aloud):
-- Maximum 2 sentences per response
-- Natural, conversational tone — no robotic phrases
-- Never say "I notice", "I detect", "as your AI"
-- Use contractions: "you're", "it's", "don't"
-- Vary your openings — never start with the same word twice in a row
-- If warning, be firm but not scary
-- If chatting, be warm and genuinely interested
+CRITICAL RULES:
+- Maximum 2 sentences per response — you are being read aloud
+- ALWAYS directly answer what the driver asked first before anything else
+- If they ask about speed, tell them their exact speed
+- If they ask about hard brakes or turns, tell them the exact count
+- If they ask a question, answer it — don't deflect with generic safety tips
+- Never give the same response twice in a row
+- Never say "I notice", "I detect", "as your AI", "certainly", "of course"
+- Use contractions: "you're", "it's", "don't", "that's"
+- Vary your openings every single time
+- Only give proactive safety tips if trigger is "proactive" AND nothing interesting to say
+- Be direct, warm, conversational — like a smart friend in the passenger seat
 
 PERSONALITY:
-- Calm under pressure
-- Subtly funny when appropriate
-- Genuinely caring about the driver
-- Direct when safety is at risk"""
+- Calm under pressure, never panicky
+- Subtly funny when appropriate  
+- Genuinely curious about the driver
+- Firm but kind when safety is at risk
+- Remembers context from earlier in the conversation"""
 
 async def get_ai_response(req: AnalyzeRequest, speed_limit_kmh: int) -> str:
     global conversation_history
@@ -162,67 +165,93 @@ async def get_ai_response(req: AnalyzeRequest, speed_limit_kmh: int) -> str:
     speed_limit_mph = round(speed_limit_kmh / 1.60934)
     speed_mph = round(req.speedKmh / 1.60934)
     trip_mins = req.tripStats.get("tripSecs", 0) // 60
+    trip_secs = req.tripStats.get("tripSecs", 0) % 60
 
-    situation = f"""
-SITUATION: {req.trigger}
-Driver emotion: {req.emotion}
-Speed: {speed_mph} mph (limit: {speed_limit_mph} mph)
-Driving event just happened: {req.sensorData.get('event', 'none')}
-Hard brakes this trip: {req.sensorData.get('hardBrakes', 0)}
-Sharp turns this trip: {req.sensorData.get('sharpTurns', 0)}
-Time driving: {trip_mins} minutes
+    hard_brakes = req.sensorData.get("hardBrakes", 0)
+    sharp_turns = req.sensorData.get("sharpTurns", 0)
+    g_force = req.sensorData.get("gForce", 0)
+    current_event = req.sensorData.get("event", "none")
+
+    situation = f"""CURRENT SITUATION:
+Trigger: {req.trigger}
 Driver just said: "{req.driverMessage}"
+Driver emotion: {req.emotion}
 
-TRIGGER GUIDE:
-- speeding → warn about speed, keep it brief and friendly
-- tired → empathize, suggest a break, maybe ask when they last slept
-- stressed → acknowledge stress, calming tone, suggest deep breath
-- happy → match their energy, warm conversation
-- hard_brake → calmly acknowledge it, check if they're okay
-- sharp_turn_right / sharp_turn_left → note the sharp turn
-- hard_acceleration → gently note the aggressive acceleration
-- swerve → ask if everything's alright
-- driver_spoke → respond naturally to exactly what they said
-- proactive → friendly check-in based on how the trip is going
-- crash_warning → urgent but calm, tell them help is coming
-"""
+REAL-TIME DATA:
+Current speed: {speed_mph} mph
+Speed limit: {speed_limit_mph} mph
+Speeding: {"YES by " + str(speed_mph - speed_limit_mph) + " mph" if speed_mph > speed_limit_mph else "No"}
+Current G-force: {g_force:.2f}g
+Sensor event right now: {current_event}
 
-    history_context = "\n".join(conversation_history[-6:])
-    full_prompt = f"{CODRIVER_PERSONA}\n\n{situation}\n\nRecent conversation:\n{history_context}"
+TRIP STATS SO FAR:
+Time driving: {trip_mins} min {trip_secs} sec
+Hard brakes this trip: {hard_brakes}
+Sharp turns this trip: {sharp_turns}
+
+HOW TO RESPOND BY TRIGGER:
+- driver_spoke → Answer their question DIRECTLY and completely. If they ask speed say "{speed_mph} mph". If they ask hard brakes say "{hard_brakes}". Be conversational after answering.
+- speeding → Tell them exact speed and limit. Firm but friendly. Example: "You're doing {speed_mph} in a {speed_limit_mph} zone — ease up a bit."
+- hard_brake → Acknowledge it happened. Ask if they're okay if it was severe.
+- sharp_turn_left / sharp_turn_right → Briefly note it. Suggest slowing before turns.
+- hard_acceleration → Note it gently. Mention fuel efficiency if relevant.
+- swerve → Ask if everything's alright ahead.
+- tired → Empathize. Suggest a break. Ask when they last slept.
+- stressed → Calming tone. Suggest a deep breath. Ask what's going on.
+- happy → Match energy. Be warm and fun.
+- proactive → ONLY if trip is going well: brief, varied, friendly comment. NOT "Trip's going smoothly" — be more specific and interesting.
+- crash_warning → Urgent but calm. Tell them help is coming."""
+
+    # Build conversation context
+    history_context = ""
+    if conversation_history:
+        history_context = "\nRecent conversation (use this for context):\n" + "\n".join(conversation_history[-8:])
+
+    full_prompt = f"{CODRIVER_PERSONA}\n\n{situation}{history_context}\n\nRespond now as CoDriver:"
 
     try:
         response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-2.5-flash-preview-05-20",
             contents=full_prompt,
             config=types.GenerateContentConfig(
-                temperature=0.85,
+                temperature=0.82,
                 top_p=0.95,
                 max_output_tokens=120,
             )
         )
         reply = response.text.strip()
 
-        conversation_history.append(f"CoDriver said: {reply}")
-        if len(conversation_history) > 10:
-            conversation_history = conversation_history[-10:]
+        # Track conversation
+        if req.driverMessage:
+            conversation_history.append(f"Driver: {req.driverMessage}")
+        conversation_history.append(f"CoDriver: {reply}")
+        if len(conversation_history) > 16:
+            conversation_history = conversation_history[-16:]
 
         return reply
     except Exception as e:
         logging.error(f"Gemini error: {e}")
+        # Smarter fallbacks that use real data
+        speed_str = f"{speed_mph} mph"
+        limit_str = f"{speed_limit_mph} mph limit"
         fallbacks = {
-            "speeding": "Hey, you're a bit over the speed limit — ease off just a touch.",
-            "tired": "You're looking a little tired. Want to find somewhere to pull over for a bit?",
-            "stressed": "Take a breath — you've got this. The road's all yours.",
-            "happy": "Love the good vibes! Keep it up.",
-            "hard_brake": "Whoa, nice reflexes. Everything alright up ahead?",
-            "proactive": "Trip's going smoothly. You're doing great.",
+            "speeding": f"You're at {speed_str} in a {limit_str} — ease off a little.",
+            "tired": "You're looking a little tired — want to find somewhere to pull over?",
+            "stressed": "Take a breath, you've got this.",
+            "happy": "Love the energy! Keep it up.",
+            "hard_brake": "Nice reflexes. Everything alright up ahead?",
+            "hard_acceleration": "Easy on the gas there!",
+            "sharp_turn_left": "That was a sharp left — slow down a bit before turns.",
+            "sharp_turn_right": "That was a sharp right — take it easy on the corners.",
+            "swerve": "Everything alright? That was quite a swerve.",
+            "driver_spoke": f"You're going {speed_str} with {hard_brakes} hard brakes this trip.",
+            "proactive": f"You've been driving {trip_mins} minutes — {speed_str}, all looking good.",
         }
-        return fallbacks.get(req.trigger, "Stay focused — you're doing well.")
+        return fallbacks.get(req.trigger, f"All good — {speed_str}, {trip_mins} minutes in.")
 
 # ─────────────────────────────────────────────────────
 #  ML — DRIVING PATTERN ANALYSIS
 # ─────────────────────────────────────────────────────
-
 async def save_event(event_data: dict):
     if db is None:
         return
@@ -270,7 +299,7 @@ async def get_ml_tips() -> list:
                 period = "morning" if 5 <= worst_hour < 12 else \
                          "afternoon" if 12 <= worst_hour < 17 else \
                          "evening" if 17 <= worst_hour < 21 else "night"
-                tips.append(f"You tend to drive more aggressively in the {period} around {worst_hour}:00. Stay extra alert during that time.")
+                tips.append(f"You tend to drive more aggressively in the {period} around {worst_hour}:00.")
 
         if event_type_counts:
             worst = max(event_type_counts, key=event_type_counts.get)
@@ -279,9 +308,9 @@ async def get_ml_tips() -> list:
                 messages = {
                     "hard_brake": f"You've had {c} hard braking events. Try increasing your following distance.",
                     "hard_acceleration": f"Frequent hard acceleration detected ({c} times). Smoother starts save fuel.",
-                    "sharp_turn_left": f"You tend to take left turns sharply. Slow down a bit before turning.",
-                    "sharp_turn_right": f"You tend to take right turns sharply. Ease into them.",
-                    "swerve": f"You've had {c} swerving events. Make sure you're fully alert before driving.",
+                    "sharp_turn_left": f"You tend to take left turns sharply ({c} times). Slow down before turning.",
+                    "sharp_turn_right": f"You tend to take right turns sharply ({c} times). Ease into them.",
+                    "swerve": f"You've had {c} swerving events. Make sure you're fully alert.",
                 }
                 if worst in messages:
                     tips.append(messages[worst])
@@ -290,7 +319,7 @@ async def get_ml_tips() -> list:
             worst_spot = max(location_clusters, key=location_clusters.get)
             count = location_clusters[worst_spot]
             if count >= 3:
-                tips.append(f"You've had {count} incidents near the same location. Be extra cautious in that area.")
+                tips.append(f"You've had {count} incidents near the same location — be extra cautious there.")
 
         return tips[:3] if tips else ["Great driving! No patterns of concern detected yet."]
     except Exception as e:
@@ -300,7 +329,6 @@ async def get_ml_tips() -> list:
 # ─────────────────────────────────────────────────────
 #  ROUTES
 # ─────────────────────────────────────────────────────
-
 @app.get("/api/health")
 async def health():
     return {
@@ -344,7 +372,7 @@ async def crash(req: CrashRequest):
     lat = req.gps.get("lat", 0)
     lng = req.gps.get("lng", 0)
 
-    if db:
+    if db is not None:  # Fixed: was "if db:" which throws NotImplementedError
         asyncio.create_task(save_event({
             "event": "crash",
             "lat": lat,
@@ -366,29 +394,42 @@ async def trip_summary(req: TripSummaryRequest):
         evt = e.get("event", "unknown")
         events_summary[evt] = events_summary.get(evt, 0) + 1
 
-    prompt = f"""Generate a friendly, encouraging trip summary (2-3 sentences max).
+    hard_brakes = events_summary.get('hard_brake', 0)
+    hard_accels = events_summary.get('hard_acceleration', 0)
+    sharp_turns = events_summary.get('sharp_turn_left', 0) + events_summary.get('sharp_turn_right', 0)
+    swerves = events_summary.get('swerve', 0)
+    max_mph = round(req.maxSpeed / 1.60934)
+
+    prompt = f"""Generate a warm, specific, encouraging trip summary (2-3 sentences max).
 Trip data:
 - Duration: {mins} minutes {secs} seconds
-- Max speed: {round(req.maxSpeed / 1.60934)} mph
-- Hard brakes: {events_summary.get('hard_brake', 0)}
-- Hard accelerations: {events_summary.get('hard_acceleration', 0)}
-- Sharp turns: {events_summary.get('sharp_turn_left', 0) + events_summary.get('sharp_turn_right', 0)}
-- Swerves: {events_summary.get('swerve', 0)}
+- Max speed: {max_mph} mph
+- Hard brakes: {hard_brakes}
+- Hard accelerations: {hard_accels}
+- Sharp turns: {sharp_turns}
+- Swerves: {swerves}
 
-Be warm and specific. Mention what they did well. If there were issues, mention them gently.
-End with something encouraging. Keep it conversational — this will be read aloud."""
+Rules:
+- Mention specific numbers from the data
+- Be warm and genuine — not robotic
+- If clean trip: celebrate it specifically
+- If issues: mention gently with one actionable tip
+- End encouragingly
+- This will be read aloud — keep it conversational"""
 
     try:
         response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-2.5-flash-preview-05-20",
             contents=prompt,
             config=types.GenerateContentConfig(max_output_tokens=150)
         )
         summary_text = response.text.strip()
     except:
-        hard_brakes = events_summary.get('hard_brake', 0)
-        summary_text = f"Trip complete! You drove for {mins} minutes."
-        summary_text += " Really smooth driving — no hard braking at all." if hard_brakes == 0 else f" You had {hard_brakes} hard braking moments to watch next time."
+        summary_text = f"Trip complete — {mins} minutes, max {max_mph} mph."
+        if hard_brakes == 0 and sharp_turns == 0:
+            summary_text += " Really clean driving, no hard events at all!"
+        else:
+            summary_text += f" {hard_brakes} hard brakes and {sharp_turns} sharp turns to keep in mind next time."
         summary_text += " Stay safe out there!"
 
     audio = await text_to_speech(summary_text)

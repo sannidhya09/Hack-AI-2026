@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import Header from "./components/Header";
 import SpeedCard from "./components/SpeedCard";
@@ -9,16 +9,14 @@ import CrashAlert from "./components/CrashAlert";
 import TripSummary from "./components/TripSummary";
 import MusicModal from "./components/MusicModal";
 import TipsPanel from "./components/TipsPanel";
-import WaveformBar from "./components/WaveformBar";
 
 const ESP32_WS      = import.meta.env.VITE_ESP32_WS || "ws://192.168.4.1:81";
 const BACKEND       = import.meta.env.VITE_BACKEND_URL || "";
-const SPEED_WARN_MS = 15000;
-const PROACTIVE_MS  = 45000;
+const SPEED_WARN_MS = 30000;
+const PROACTIVE_MS  = 900000; // 15 min
 const EVENT_COOL_MS = 12000;
-const EMOTION_COOL_MS = 20000;
+const EMOTION_COOL_MS = 30000;
 
-// Haversine distance in meters
 function haversine(lat1, lon1, lat2, lon2) {
   const R = 6371000;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -29,102 +27,143 @@ function haversine(lat1, lon1, lat2, lon2) {
 }
 
 export default function App() {
-  // ─── Core State ────────────────────────────────
-  const [sensorData, setSensorData]     = useState(null);
-  const [emotion, setEmotion]           = useState("neutral");
-  const [gps, setGps]                   = useState({ lat: null, lng: null });
-  const [speedKmh, setSpeedKmh]         = useState(0);
-  const [speedLimit, setSpeedLimit]     = useState(56);
-  const [connected, setConnected]       = useState(false);
-  const [conversation, setConversation] = useState([]);
-  const [tips, setTips]                 = useState([]);
-  const [listening, setListening]       = useState(false);
-  const [aiSpeaking, setAiSpeaking]     = useState(false);
-  const [micVolume, setMicVolume]       = useState(0);
+  // ─── State ────────────────────────────────────────
+  const [sensorData,     setSensorData]     = useState(null);
+  const [emotion,        setEmotion]        = useState("neutral");
+  const [gps,            setGps]            = useState({ lat: null, lng: null });
+  const [speedKmh,       setSpeedKmh]       = useState(0);
+  const [speedLimit,     setSpeedLimit]     = useState(56);
+  const [connected,      setConnected]      = useState(false);
+  const [conversation,   setConversation]   = useState([]);
+  const [tips,           setTips]           = useState([]);
+  const [listening,      setListening]      = useState(false);
+  const [aiSpeaking,     setAiSpeaking]     = useState(false);
+  const [micVolume,      setMicVolume]      = useState(0);
+  const [audioStarted,   setAudioStarted]   = useState(false);
 
-  // ─── UI State ──────────────────────────────────
-  const [crashAlert, setCrashAlert]     = useState(false);
-  const [crashData, setCrashData]       = useState(null);
-  const [tripEnded, setTripEnded]       = useState(false);
-  const [tripSummary, setTripSummary]   = useState(null);
-  const [musicModal, setMusicModal]     = useState(false);
-  const [musicData, setMusicData]       = useState(null);
-  const [tripStartTime]                 = useState(Date.now());
-  const [drivingEvents, setDrivingEvents] = useState([]);
-  const [maxSpeed, setMaxSpeed]         = useState(0);
+  // Sensor counters — set directly from ESP32 cumulative counts
+  const [hardBrakes,     setHardBrakes]     = useState(0);
+  const [sharpTurns,     setSharpTurns]     = useState(0);
+  const [hardAccels,     setHardAccels]     = useState(0);
+  const [currentGForce,  setCurrentGForce]  = useState(0);
 
-  // ─── Refs (no re-render needed) ────────────────
+  // UI
+  const [crashAlert,  setCrashAlert]  = useState(false);
+  const [crashData,   setCrashData]   = useState(null);
+  const [tripEnded,   setTripEnded]   = useState(false);
+  const [tripSummary, setTripSummary] = useState(null);
+  const [musicModal,  setMusicModal]  = useState(false);
+  const [musicData,   setMusicData]   = useState(null);
+  const [maxSpeed,    setMaxSpeed]    = useState(0);
+  const [tripStartTime] = useState(Date.now());
+
+  // ─── Refs (stable across renders, safe in closures) ──
+  // Use a single "live state" ref object so we never have stale closure issues
+  const live = useRef({
+    speed: 0, limit: 56, emotion: "neutral",
+    gps: { lat: null, lng: null },
+    hardBrakes: 0, sharpTurns: 0, hardAccels: 0, gForce: 0,
+    currentEvent: "normal",
+    aiSpeaking: false, audioStarted: false,
+  });
+
+  // Keep live ref synced with state
+  useEffect(() => { live.current.speed       = speedKmh;     }, [speedKmh]);
+  useEffect(() => { live.current.limit       = speedLimit;   }, [speedLimit]);
+  useEffect(() => { live.current.emotion     = emotion;      }, [emotion]);
+  useEffect(() => { live.current.gps         = gps;          }, [gps]);
+  useEffect(() => { live.current.hardBrakes  = hardBrakes;   }, [hardBrakes]);
+  useEffect(() => { live.current.sharpTurns  = sharpTurns;   }, [sharpTurns]);
+  useEffect(() => { live.current.hardAccels  = hardAccels;   }, [hardAccels]);
+  useEffect(() => { live.current.gForce      = currentGForce;}, [currentGForce]);
+  useEffect(() => { live.current.aiSpeaking  = aiSpeaking;   }, [aiSpeaking]);
+  useEffect(() => { live.current.audioStarted= audioStarted; }, [audioStarted]);
+
+  // Other refs
   const wsRef            = useRef(null);
+  const wsRetryRef       = useRef(null);
   const lastPosRef       = useRef(null);
+  const speedHistoryRef  = useRef([]);
+  const prevSpeedRef     = useRef(0);
+  const prevSpeedTimeRef = useRef(Date.now());
   const lastSpeedWarnRef = useRef(0);
-  const lastProactiveRef = useRef(0);
+  const lastProactiveRef = useRef(Date.now());
   const lastEventRef     = useRef(0);
   const lastEmotionRef   = useRef(0);
   const crashTimerRef    = useRef(null);
   const stopTimerRef     = useRef(null);
-  const prevSpeedRef     = useRef(0);
-  const prevSpeedTimeRef = useRef(Date.now());
   const recognitionRef   = useRef(null);
   const audioCtxRef      = useRef(null);
   const analyserRef      = useRef(null);
   const animFrameRef     = useRef(null);
+  const tripStartRef     = useRef(tripStartTime);
 
-  // Live refs for callbacks
-  const sensorRef     = useRef(null);
-  const speedRef      = useRef(0);
-  const emotionRef    = useRef("neutral");
-  const gpsRef        = useRef({ lat: null, lng: null });
-  const limitRef      = useRef(56);
-  const eventsRef     = useRef([]);
+  // ─── iOS Audio Unlock ─────────────────────────────
+  const unlockAudio = async () => {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      await ctx.resume();
+      // Play silent buffer to unlock iOS
+      const buf = ctx.createBuffer(1, 1, 22050);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.start(0);
+      audioCtxRef.current = ctx;
+      setAudioStarted(true);
+      live.current.audioStarted = true;
+      startMic(ctx);
+      // First proactive message after 1.5s
+      setTimeout(() => callAnalyze("proactive"), 1500);
+    } catch (e) {
+      console.warn("Audio unlock:", e);
+      setAudioStarted(true);
+      live.current.audioStarted = true;
+    }
+  };
 
-  useEffect(() => { sensorRef.current  = sensorData; }, [sensorData]);
-  useEffect(() => { speedRef.current   = speedKmh; }, [speedKmh]);
-  useEffect(() => { emotionRef.current = emotion; }, [emotion]);
-  useEffect(() => { gpsRef.current     = gps; }, [gps]);
-  useEffect(() => { limitRef.current   = speedLimit; }, [speedLimit]);
-  useEffect(() => { eventsRef.current  = drivingEvents; }, [drivingEvents]);
-
-  // ─── GPS + Speed + Crash Detection ─────────────
+  // ─── GPS + Speed ──────────────────────────────────
   useEffect(() => {
     if (!navigator.geolocation) return;
-
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
         const { latitude: lat, longitude: lng } = pos.coords;
         const now = Date.now();
-        let spd = pos.coords.speed ? pos.coords.speed * 3.6 : 0;
 
-        if (lastPosRef.current) {
+        let spd = 0;
+        // Native GPS speed is most accurate when available
+        if (pos.coords.speed !== null && pos.coords.speed >= 0) {
+          spd = pos.coords.speed * 3.6;
+        } else if (lastPosRef.current) {
           const dt   = (now - lastPosRef.current.time) / 1000;
           const dist = haversine(lastPosRef.current.lat, lastPosRef.current.lng, lat, lng);
-          if (dt > 0 && dt < 5) spd = Math.max(spd, (dist / dt) * 3.6);
+          if (dt > 0 && dt < 3) spd = (dist / dt) * 3.6;
         }
+        spd = Math.min(spd, 200); // cap noise spikes
 
         lastPosRef.current = { lat, lng, time: now };
+
+        // 5-sample rolling average
+        const hist = speedHistoryRef.current;
+        hist.push(spd);
+        if (hist.length > 5) hist.shift();
+        const smoothed = Math.round(hist.reduce((a, b) => a + b, 0) / hist.length);
+
         setGps({ lat, lng });
-        const rounded = Math.round(spd);
-        setSpeedKmh(rounded);
-        setMaxSpeed(prev => Math.max(prev, rounded));
+        setSpeedKmh(smoothed);
+        setMaxSpeed(prev => Math.max(prev, smoothed));
 
-        // Vibrate API for haptic feedback
-        if (navigator.vibrate) {
-          const limitKmh = limitRef.current;
-          if (rounded > limitKmh + 10) navigator.vibrate([50, 50, 50]);
-        }
+        // Crash detection: >48 km/h drop in <1.5s while moving
+        const drop = prevSpeedRef.current - spd;
+        const dt2  = (now - prevSpeedTimeRef.current) / 1000;
+        if (drop > 48 && dt2 < 1.5 && prevSpeedRef.current > 30) triggerCrash();
 
-        // ── Crash detection: >48 kmh drop in <1.5s ──
-        const speedDrop = prevSpeedRef.current - spd;
-        const timeDiff  = (now - prevSpeedTimeRef.current) / 1000;
-        if (speedDrop > 48 && timeDiff < 1.5 && prevSpeedRef.current > 30 && !crashAlert) {
-          triggerCrash();
-        }
-
-        // ── Stopped detection for trip summary ──
-        if (rounded < 3 && prevSpeedRef.current > 10) {
+        // Trip end: stopped for 30s
+        if (smoothed < 3 && prevSpeedRef.current > 10) {
           stopTimerRef.current = setTimeout(() => {
-            if (speedRef.current < 3) endTrip();
+            if (live.current.speed < 3) endTrip();
           }, 30000);
-        } else if (rounded > 5 && stopTimerRef.current) {
+        } else if (smoothed > 5 && stopTimerRef.current) {
           clearTimeout(stopTimerRef.current);
           stopTimerRef.current = null;
         }
@@ -132,57 +171,105 @@ export default function App() {
         prevSpeedRef.current     = spd;
         prevSpeedTimeRef.current = now;
       },
-      (err) => console.log("GPS:", err.message),
-      { enableHighAccuracy: true, maximumAge: 500, timeout: 5000 }
+      (err) => console.warn("GPS:", err.message),
+      { enableHighAccuracy: true, maximumAge: 500, timeout: 8000 }
     );
-
     return () => navigator.geolocation.clearWatch(watchId);
-  }, [crashAlert]);
-
-  // ─── WebSocket ESP32 ───────────────────────────
-  useEffect(() => {
-    connect();
-    return () => wsRef.current?.close();
   }, []);
 
-  const connect = useCallback(() => {
+  // ─── WebSocket — ESP32 sensor data ───────────────
+  // IMPORTANT: No useCallback with stale closure. Use a ref-based retry
+  // so we always call the latest version of connectWS.
+  const connectWSRef = useRef(null);
+  connectWSRef.current = function connectWS() {
+    clearTimeout(wsRetryRef.current);
     try {
       const ws = new WebSocket(ESP32_WS);
       wsRef.current = ws;
 
       ws.onopen = () => {
+        console.log("✓ ESP32 WebSocket connected");
         setConnected(true);
-        console.log("ESP32 connected");
       };
 
       ws.onclose = () => {
         setConnected(false);
-        setTimeout(connect, 3000);
+        wsRetryRef.current = setTimeout(() => connectWSRef.current(), 3000);
       };
 
       ws.onerror = () => {
+        // onclose fires after onerror, so just close
         ws.close();
       };
 
       ws.onmessage = (e) => {
         try {
           const data = JSON.parse(e.data);
-          if (data.type === "sensors") {
-            setSensorData(data);
-            // Track events for trip summary
-            if (data.event && data.event !== "normal") {
-              setDrivingEvents(prev => [...prev, { event: data.event, time: Date.now() }]);
-            }
+
+          // ESP32 firmware sends:
+          // { accelX, accelY, accelZ, gyroX, gyroY, gyroZ,
+          //   event, hardBrakes, sharpTurns, hardAccels, tripTime, audioLevel }
+          // Accept any message that has sensor fields (don't require data.type === "sensors")
+          if (
+            data.accelX !== undefined ||
+            data.accelY !== undefined ||
+            data.event  !== undefined ||
+            data.hardBrakes !== undefined
+          ) {
+            const ax = parseFloat(data.accelX) || 0;
+            const ay = parseFloat(data.accelY) || 0;
+            const az = parseFloat(data.accelZ) || 0;
+            const gForce = parseFloat(Math.sqrt(ax*ax + ay*ay + az*az).toFixed(2));
+
+            // ── These are cumulative counts sent by ESP32 ──
+            const hb = parseInt(data.hardBrakes) || 0;
+            const st = parseInt(data.sharpTurns) || 0;
+            const ha = parseInt(data.hardAccels) || 0;
+            const evt = data.event || "normal";
+
+            setHardBrakes(hb);
+            setSharpTurns(st);
+            setHardAccels(ha);
+            setCurrentGForce(gForce);
+            live.current.hardBrakes  = hb;
+            live.current.sharpTurns  = st;
+            live.current.hardAccels  = ha;
+            live.current.gForce      = gForce;
+            live.current.currentEvent = evt;
+
+            setSensorData({
+              event: evt,
+              accelX: ax, accelY: ay, accelZ: az,
+              gyroX: parseFloat(data.gyroX) || 0,
+              gyroY: parseFloat(data.gyroY) || 0,
+              gyroZ: parseFloat(data.gyroZ) || 0,
+              hardBrakes: hb,
+              sharpTurns: st,
+              hardAccels: ha,
+              gForce,
+              audioLevel: parseFloat(data.audioLevel) || 0,
+            });
           }
-        } catch {}
+        } catch (err) {
+          console.warn("WS parse error:", err);
+        }
       };
-    } catch {
-      setTimeout(connect, 3000);
+    } catch (err) {
+      wsRetryRef.current = setTimeout(() => connectWSRef.current(), 3000);
     }
+  };
+
+  useEffect(() => {
+    connectWSRef.current();
+    return () => {
+      clearTimeout(wsRetryRef.current);
+      wsRef.current?.close();
+    };
   }, []);
 
-  // ─── Voice Recognition (phone mic) ────────────
+  // ─── Voice Recognition ────────────────────────────
   useEffect(() => {
+    if (!audioStarted) return;
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) return;
 
@@ -190,135 +277,114 @@ export default function App() {
     rec.continuous     = true;
     rec.interimResults = false;
     rec.lang           = "en-US";
-    rec.maxAlternatives = 1;
 
     rec.onstart  = () => setListening(true);
     rec.onend    = () => {
       setListening(false);
-      if (!aiSpeaking) {
-        setTimeout(() => { try { rec.start(); } catch {} }, 800);
+      if (!live.current.aiSpeaking) {
+        setTimeout(() => { try { rec.start(); } catch {} }, 500);
       }
     };
-    rec.onerror  = (e) => {
-      if (e.error !== "no-speech" && e.error !== "aborted") {
-        setTimeout(() => { try { rec.start(); } catch {} }, 2000);
-      }
+    rec.onerror = (e) => {
+      if (e.error === "not-allowed") return;
+      setTimeout(() => { try { rec.start(); } catch {} }, 2000);
     };
     rec.onresult = (e) => {
       const text = e.results[e.results.length - 1][0].transcript.trim();
-      if (text) handleDriverSpoke(text);
+      if (text.length > 1) handleDriverSpoke(text);
     };
 
     recognitionRef.current = rec;
     try { rec.start(); } catch {}
-
     return () => { try { rec.stop(); } catch {} };
+  }, [audioStarted]);
+
+  // ─── Mic Volume ───────────────────────────────────
+  const startMic = async (existingCtx) => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const ctx    = existingCtx || audioCtxRef.current;
+      const source = ctx.createMediaStreamSource(stream);
+      analyserRef.current = ctx.createAnalyser();
+      analyserRef.current.fftSize = 256;
+      source.connect(analyserRef.current);
+      const buf = new Uint8Array(analyserRef.current.frequencyBinCount);
+      const tick = () => {
+        analyserRef.current?.getByteFrequencyData(buf);
+        const avg = buf.reduce((a, b) => a + b, 0) / buf.length;
+        setMicVolume(Math.round(avg));
+        animFrameRef.current = requestAnimationFrame(tick);
+      };
+      tick();
+    } catch {}
+  };
+
+  useEffect(() => () => {
+    cancelAnimationFrame(animFrameRef.current);
+    audioCtxRef.current?.close();
   }, []);
 
-  // ─── Mic Volume Visualization ──────────────────
+  // ─── Main Analysis Loop ───────────────────────────
   useEffect(() => {
-    async function setupAudio() {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
-        const source  = audioCtxRef.current.createMediaStreamSource(stream);
-        analyserRef.current = audioCtxRef.current.createAnalyser();
-        analyserRef.current.fftSize = 256;
-        source.connect(analyserRef.current);
-
-        const data = new Uint8Array(analyserRef.current.frequencyBinCount);
-        const tick = () => {
-          analyserRef.current.getByteFrequencyData(data);
-          const avg = data.reduce((a, b) => a + b, 0) / data.length;
-          setMicVolume(Math.round(avg));
-          animFrameRef.current = requestAnimationFrame(tick);
-        };
-        tick();
-      } catch {}
-    }
-    setupAudio();
-    return () => {
-      cancelAnimationFrame(animFrameRef.current);
-      audioCtxRef.current?.close();
-    };
-  }, []);
-
-  // ─── Main Analysis Loop ────────────────────────
-  useEffect(() => {
+    if (!audioStarted) return;
     const interval = setInterval(() => {
-      const now    = Date.now();
-      const sensor = sensorRef.current;
-      const spd    = speedRef.current;
-      const limit  = limitRef.current;
-      const emo    = emotionRef.current;
+      const now = Date.now();
+      const l   = live.current;
 
-      if (!sensor && spd === 0) return;
-
-      // Speeding
-      if (spd > limit && now - lastSpeedWarnRef.current > SPEED_WARN_MS) {
+      // 1. Speeding
+      if (l.speed > l.limit + 5 && now - lastSpeedWarnRef.current > SPEED_WARN_MS) {
         lastSpeedWarnRef.current = now;
         callAnalyze("speeding");
-        if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
         return;
       }
-
-      // Driving event
-      const event = sensor?.event;
-      if (event && event !== "normal" && now - lastEventRef.current > EVENT_COOL_MS) {
+      // 2. Hardware sensor event
+      if (l.currentEvent && l.currentEvent !== "normal" && now - lastEventRef.current > EVENT_COOL_MS) {
         lastEventRef.current = now;
-        callAnalyze(event);
+        callAnalyze(l.currentEvent);
         return;
       }
-
-      // Emotion
-      if ((emo === "tired" || emo === "stressed") && now - lastEmotionRef.current > EMOTION_COOL_MS) {
+      // 3. Emotion
+      if ((l.emotion === "tired" || l.emotion === "stressed") && now - lastEmotionRef.current > EMOTION_COOL_MS) {
         lastEmotionRef.current = now;
-        callAnalyze(emo);
+        callAnalyze(l.emotion);
         return;
       }
-
-      if (emo === "happy" && now - lastEmotionRef.current > EMOTION_COOL_MS * 2) {
-        lastEmotionRef.current = now;
-        callAnalyze("happy");
-        return;
-      }
-
-      // Proactive check-in
+      // 4. Proactive — every 15 min
       if (now - lastProactiveRef.current > PROACTIVE_MS) {
         lastProactiveRef.current = now;
         callAnalyze("proactive");
       }
     }, 2000);
-
     return () => clearInterval(interval);
-  }, []);
+  }, [audioStarted]);
 
-  // ─── Load Tips ─────────────────────────────────
+  // ─── Load Tips ────────────────────────────────────
   useEffect(() => {
-    axios.get(`${BACKEND}/api/tips`)
-      .then(r => setTips(r.data.tips))
-      .catch(() => {});
+    axios.get(`${BACKEND}/api/tips`).then(r => setTips(r.data.tips)).catch(() => {});
   }, []);
 
-  // ─── Core Functions ────────────────────────────
+  // ─── Core Functions ───────────────────────────────
   const callAnalyze = async (trigger, driverMessage = "") => {
-    if (aiSpeaking) return;
+    if (live.current.aiSpeaking) return;
+    const l = live.current;
     try {
       const res = await axios.post(`${BACKEND}/api/analyze`, {
         trigger,
-        sensorData:   sensorRef.current || {},
-        emotion:      emotionRef.current,
-        gps:          gpsRef.current,
-        speedKmh:     speedRef.current,
+        sensorData: {
+          event:      l.currentEvent,
+          hardBrakes: l.hardBrakes,
+          sharpTurns: l.sharpTurns,
+          hardAccels: l.hardAccels,
+          gForce:     l.gForce,
+        },
+        emotion:      l.emotion,
+        gps:          l.gps,
+        speedKmh:     l.speed,
         driverMessage,
-        tripStats: {
-          tripSecs: Math.round((Date.now() - tripStartTime) / 1000)
-        }
+        tripStats: { tripSecs: Math.round((Date.now() - tripStartRef.current) / 1000) }
       });
-
       const { reply, audio, speedLimit: sl } = res.data;
       if (sl && sl > 0) setSpeedLimit(sl);
-
       addMessage("CoDriver", reply, trigger);
       if (audio) playAudio(audio);
     } catch (e) {
@@ -327,9 +393,8 @@ export default function App() {
   };
 
   const handleDriverSpoke = (text) => {
-    // Check for music commands
-    const musicKeywords = ["play", "music", "song", "spotify", "youtube"];
-    if (musicKeywords.some(k => text.toLowerCase().includes(k))) {
+    const musicKw = ["play music", "play some music", "put on music", "play song", "play spotify", "play youtube"];
+    if (musicKw.some(k => text.toLowerCase().includes(k))) {
       handleMusicRequest(text);
       return;
     }
@@ -343,7 +408,7 @@ export default function App() {
       const res = await axios.post(`${BACKEND}/api/music`, { query });
       setMusicData(res.data);
       setMusicModal(true);
-      addMessage("CoDriver", `Opening music for "${res.data.query}" — pick your platform!`, "music");
+      addMessage("CoDriver", "Opening music for you!", "music");
     } catch {
       callAnalyze("driver_spoke", query);
     }
@@ -358,37 +423,30 @@ export default function App() {
 
   const playAudio = (b64) => {
     setAiSpeaking(true);
-    // Stop recognition while speaking to avoid feedback
+    live.current.aiSpeaking = true;
     try { recognitionRef.current?.stop(); } catch {}
-
     const audio = new Audio(`data:audio/mpeg;base64,${b64}`);
-    audio.onended = () => {
+    const done = () => {
       setAiSpeaking(false);
-      setTimeout(() => {
-        try { recognitionRef.current?.start(); } catch {}
-      }, 500);
+      live.current.aiSpeaking = false;
+      setTimeout(() => { try { recognitionRef.current?.start(); } catch {} }, 500);
     };
-    audio.onerror = () => {
-      setAiSpeaking(false);
-      setTimeout(() => {
-        try { recognitionRef.current?.start(); } catch {}
-      }, 500);
-    };
-    audio.play().catch(() => setAiSpeaking(false));
+    audio.onended = done;
+    audio.onerror = done;
+    audio.play().catch(done);
   };
 
   const triggerCrash = async () => {
-    setCrashAlert(true);
+    if (crashTimerRef.current) return; // already triggered
     navigator.vibrate?.([300, 100, 300, 100, 300]);
-
+    setCrashAlert(true);
     try {
       const res = await axios.post(`${BACKEND}/api/crash`, {
-        gps: gpsRef.current,
-        sensorData: sensorRef.current
+        gps: live.current.gps,
+        sensorData: { gForce: live.current.gForce }
       });
       setCrashData(res.data);
     } catch {}
-
     crashTimerRef.current = setTimeout(() => {
       window.location.href = "tel:911";
     }, 5000);
@@ -398,82 +456,98 @@ export default function App() {
     setCrashAlert(false);
     setCrashData(null);
     clearTimeout(crashTimerRef.current);
-    addMessage("CoDriver", "Glad you're okay! Take a breath and drive safe.", "normal");
-    callAnalyze("proactive", "false alarm on the crash detection");
+    crashTimerRef.current = null;
   };
 
   const endTrip = async () => {
     if (tripEnded) return;
     setTripEnded(true);
     try {
-      const duration = Math.round((Date.now() - tripStartTime) / 1000);
+      const duration = Math.round((Date.now() - tripStartRef.current) / 1000);
       const res = await axios.post(`${BACKEND}/api/trip-summary`, {
-        tripStats: { tripSecs: duration },
-        drivingEvents: eventsRef.current,
+        tripStats:       { tripSecs: duration },
+        drivingEvents:   [],
         durationSeconds: duration,
-        maxSpeed: maxSpeed
+        maxSpeed:        maxSpeed,
+        hardBrakes:      live.current.hardBrakes,
+        sharpTurns:      live.current.sharpTurns,
+        hardAccels:      live.current.hardAccels,
       });
       setTripSummary(res.data);
       if (res.data.audio) playAudio(res.data.audio);
     } catch {}
   };
 
+  // ─── Start Screen ─────────────────────────────────
+  if (!audioStarted) {
+    return (
+      <div className="min-h-screen bg-white flex flex-col items-center justify-center p-8 max-w-md mx-auto">
+        <div className="w-20 h-20 bg-red-600 rounded-3xl flex items-center justify-center shadow-lg mb-8">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none">
+            <path d="M12 2L3 7v10l9 5 9-5V7L12 2z" stroke="white" strokeWidth="2" strokeLinejoin="round"/>
+            <path d="M12 12l9-5M12 12v10M12 12L3 7" stroke="white" strokeWidth="1.5"/>
+          </svg>
+        </div>
+        <h1 className="text-4xl font-black text-gray-900 mb-2 text-center">
+          Co <span className="text-red-600">Driver</span>
+        </h1>
+        <p className="text-gray-400 text-center mb-12 text-lg">Your AI co-pilot is ready</p>
+        <div className="w-full space-y-3 mb-8">
+          {[
+            "🎙️ Listens to your voice",
+            "🔬 Reads hardware sensors in real time",
+            "🧠 AI responds naturally via Gemini",
+            "🚨 Emergency crash detection",
+          ].map((f, i) => (
+            <div key={i} className="flex items-center gap-3 bg-gray-50 rounded-2xl px-4 py-3">
+              <span className="text-lg">{f.split(" ")[0]}</span>
+              <span className="text-sm text-gray-600">{f.split(" ").slice(1).join(" ")}</span>
+            </div>
+          ))}
+        </div>
+        <button
+          onClick={unlockAudio}
+          className="w-full bg-red-600 text-white font-bold py-5 rounded-3xl text-xl shadow-lg active:scale-95 transition-transform"
+        >
+          Start CoDriver 🚗
+        </button>
+        <p className="text-xs text-gray-300 mt-4 text-center">Tap to enable voice & audio</p>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-white max-w-md mx-auto relative">
+      {crashAlert && <CrashAlert crashData={crashData} onDismiss={dismissCrash} />}
+      {tripSummary && <TripSummary summary={tripSummary} onClose={() => setTripSummary(null)} />}
+      {musicModal && musicData && <MusicModal data={musicData} onClose={() => setMusicModal(false)} />}
 
-      {/* Crash Alert Overlay */}
-      {crashAlert && (
-        <CrashAlert
-          crashData={crashData}
-          onDismiss={dismissCrash}
-        />
-      )}
-
-      {/* Trip Summary Modal */}
-      {tripSummary && (
-        <TripSummary
-          summary={tripSummary}
-          onClose={() => setTripSummary(null)}
-        />
-      )}
-
-      {/* Music Modal */}
-      {musicModal && musicData && (
-        <MusicModal
-          data={musicData}
-          onClose={() => setMusicModal(false)}
-        />
-      )}
-
-      {/* Main UI */}
-      <div className="pb-6 safe-bottom">
+      <div className="pb-6">
         <Header
           connected={connected}
           listening={listening}
           aiSpeaking={aiSpeaking}
           micVolume={micVolume}
         />
-
         <div className="px-4 space-y-3">
           <SpeedCard
             speedKmh={speedKmh}
             speedLimit={speedLimit}
             sensorData={sensorData}
           />
-
           <StatsRow
-            sensorData={sensorData}
+            hardBrakes={hardBrakes}
+            sharpTurns={sharpTurns}
+            hardAccels={hardAccels}
+            currentGForce={currentGForce}
             tripStartTime={tripStartTime}
           />
-
           <DriverStatus
             emotion={emotion}
             setEmotion={setEmotion}
             gps={gps}
           />
-
           {tips.length > 0 && <TipsPanel tips={tips} />}
-
           <ConversationPanel
             conversation={conversation}
             aiSpeaking={aiSpeaking}

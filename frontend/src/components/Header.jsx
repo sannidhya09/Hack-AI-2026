@@ -24,6 +24,7 @@ export default function Header({ connected, listening, aiSpeaking, micVolume }) 
 
         {/* Status Row */}
         <div className="flex items-center gap-2">
+
           {/* AI Speaking Waveform */}
           {aiSpeaking && (
             <div className="flex items-center gap-1.5 bg-red-50 px-2.5 py-1.5 rounded-full">
@@ -54,19 +55,23 @@ export default function Header({ connected, listening, aiSpeaking, micVolume }) 
             )}
           </div>
 
-          {/* Sensor Connection */}
+          {/* Hardware Sensor Connection — green when ESP32 connected, gray when not */}
           <div className={`flex items-center gap-1 px-2 py-1.5 rounded-full ${
             connected ? 'bg-green-50' : 'bg-gray-50'
           }`}>
             {connected ? (
-              <Wifi size={12} className="text-green-500" />
+              <>
+                <Wifi size={12} className="text-green-500" />
+                <span className="text-[10px] font-500 text-green-600">Hardware</span>
+              </>
             ) : (
-              <WifiOff size={12} className="text-gray-300" />
+              <>
+                <WifiOff size={12} className="text-gray-300" />
+                <span className="text-[10px] font-500 text-gray-400">No Sensor</span>
+              </>
             )}
-            <span className={`text-[10px] font-500 ${connected ? 'text-green-600' : 'text-gray-400'}`}>
-              {connected ? 'Live' : 'Demo'}
-            </span>
           </div>
+
         </div>
       </div>
     </div>

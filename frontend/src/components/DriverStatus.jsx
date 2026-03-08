@@ -10,72 +10,124 @@ const EMOTION_CONFIG = {
 
 export default function DriverStatus({ emotion, setEmotion, gps }) {
   const videoRef  = useRef(null);
-  const [camReady, setCamReady] = useState(false);
+  const [camReady, setCamReady]         = useState(false);
   const [presageReady, setPresageReady] = useState(false);
+  const [presageError, setPresageError] = useState(null);
   const presageKey = import.meta.env.VITE_PRESAGE_API_KEY;
+  const intervalRef = useRef(null);
 
   const cfg = EMOTION_CONFIG[emotion] || EMOTION_CONFIG.neutral;
 
-  // ─── Camera + Presage ──────────────────────────
   useEffect(() => {
-    let interval;
+    let stream;
 
-    async function initCamera() {
+    async function init() {
+      // ── 1. Start camera ──────────────────────────
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
+        stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: "user", width: 320, height: 240 }
         });
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
+          // Wait for video to actually be playing before Presage analyze
+          await new Promise((resolve) => {
+            videoRef.current.onloadedmetadata = () => {
+              videoRef.current.play().then(resolve).catch(resolve);
+            };
+          });
           setCamReady(true);
         }
-
-        // Presage SDK
-        if (window.Presage && presageKey) {
-          try {
-            await window.Presage.init({ apiKey: presageKey });
-            setPresageReady(true);
-
-            interval = setInterval(async () => {
-              if (!videoRef.current) return;
-              try {
-                const result = await window.Presage.analyze(videoRef.current);
-                if (!result) return;
-
-                const engagement = result.engagement ?? 1;
-                const valence    = result.valence ?? 0;
-                const arousal    = result.arousal ?? 0;
-
-                if (engagement < 0.25 || arousal < -0.4) {
-                  setEmotion("tired");
-                } else if (valence < -0.25 && arousal > 0.1) {
-                  setEmotion("stressed");
-                } else if (valence > 0.3 && engagement > 0.5) {
-                  setEmotion("happy");
-                } else {
-                  setEmotion("neutral");
-                }
-              } catch {}
-            }, 5000);
-
-          } catch (e) {
-            console.log("Presage init:", e.message);
-          }
-        }
       } catch (e) {
-        console.log("Camera:", e.message);
+        console.error("Camera error:", e.message);
+        return;
       }
+
+      // ── 2. Init Presage ──────────────────────────
+      // window.Presage is injected by the SDK script in index.html
+      if (!window.Presage) {
+        setPresageError("Presage SDK not loaded");
+        console.warn("window.Presage not found — check SDK script tag in index.html");
+        return;
+      }
+      if (!presageKey || presageKey === "your_presage_key_here") {
+        setPresageError("No Presage API key");
+        console.warn("VITE_PRESAGE_API_KEY not set in .env");
+        return;
+      }
+
+      try {
+        await window.Presage.init({ apiKey: presageKey });
+        setPresageReady(true);
+        console.log("Presage initialized ✓");
+      } catch (e) {
+        setPresageError(`Presage init failed: ${e.message}`);
+        console.error("Presage init error:", e);
+        return;
+      }
+
+      // ── 3. Run analysis every 5 seconds ──────────
+      intervalRef.current = setInterval(async () => {
+        if (!videoRef.current || !presageReady) return;
+        try {
+          const result = await window.Presage.analyze(videoRef.current);
+          if (!result) return;
+
+          const engagement = result.engagement ?? 1;
+          const valence    = result.valence    ?? 0;
+          const arousal    = result.arousal    ?? 0;
+
+          // Thresholds based on Presage docs:
+          // engagement: 0–1 (how engaged/alert)
+          // valence: -1 to 1 (negative = unhappy/stressed, positive = happy)
+          // arousal: -1 to 1 (negative = tired/sleepy, positive = energized)
+          if (engagement < 0.25 || arousal < -0.4) {
+            setEmotion("tired");
+          } else if (valence < -0.25 && arousal > 0.1) {
+            setEmotion("stressed");
+          } else if (valence > 0.3 && engagement > 0.5) {
+            setEmotion("happy");
+          } else {
+            setEmotion("neutral");
+          }
+        } catch (e) {
+          // Silently skip failed frames — video might not be ready yet
+        }
+      }, 5000);
     }
 
-    initCamera();
+    init();
 
     return () => {
-      clearInterval(interval);
-      if (videoRef.current?.srcObject) {
-        videoRef.current.srcObject.getTracks().forEach(t => t.stop());
-      }
+      clearInterval(intervalRef.current);
+      stream?.getTracks().forEach(t => t.stop());
     };
-  }, []);
+  }, [presageKey]);
+
+  // Re-run analysis loop once presageReady flips to true
+  useEffect(() => {
+    if (!presageReady || !camReady) return;
+    clearInterval(intervalRef.current);
+    intervalRef.current = setInterval(async () => {
+      if (!videoRef.current) return;
+      try {
+        const result = await window.Presage.analyze(videoRef.current);
+        if (!result) return;
+        const engagement = result.engagement ?? 1;
+        const valence    = result.valence    ?? 0;
+        const arousal    = result.arousal    ?? 0;
+        if (engagement < 0.25 || arousal < -0.4) {
+          setEmotion("tired");
+        } else if (valence < -0.25 && arousal > 0.1) {
+          setEmotion("stressed");
+        } else if (valence > 0.3 && engagement > 0.5) {
+          setEmotion("happy");
+        } else {
+          setEmotion("neutral");
+        }
+      } catch {}
+    }, 5000);
+    return () => clearInterval(intervalRef.current);
+  }, [presageReady, camReady]);
 
   return (
     <div className="bg-white rounded-3xl border border-gray-100 overflow-hidden shadow-sm">
@@ -109,18 +161,24 @@ export default function DriverStatus({ emotion, setEmotion, gps }) {
             </div>
           )}
 
-          {/* Presage indicator */}
+          {/* Presage status badge */}
           {camReady && (
             <div className={`absolute top-2 right-2 px-2 py-1 rounded-lg text-[10px] font-600 ${
               presageReady
                 ? 'bg-green-500 text-white'
-                : 'bg-black bg-opacity-50 text-gray-300'
+                : presageError
+                  ? 'bg-red-500 text-white'
+                  : 'bg-black bg-opacity-50 text-gray-300'
             }`}>
-              {presageReady ? '● Presage Live' : '○ Camera Ready'}
+              {presageReady
+                ? '● Presage Live'
+                : presageError
+                  ? '✕ ' + presageError
+                  : '○ Initializing...'}
             </div>
           )}
 
-          {/* Emotion overlay when tired/stressed */}
+          {/* Alert overlay for tired/stressed */}
           {(emotion === "tired" || emotion === "stressed") && (
             <div className="absolute bottom-0 left-0 right-0 bg-red-600 bg-opacity-90 py-2 px-3">
               <p className="text-white text-xs font-600 text-center">
