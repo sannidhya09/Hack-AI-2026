@@ -4,136 +4,117 @@ import { MapPin } from "lucide-react";
 const EMOTION_CONFIG = {
   neutral:  { emoji: "😐", label: "Focused",  color: "text-gray-600",  bg: "bg-gray-100" },
   happy:    { emoji: "😊", label: "Happy",    color: "text-green-600", bg: "bg-green-50" },
-  tired:    { emoji: "😴", label: "Tired",    color: "text-red-600",   bg: "bg-red-50" },
+  tired:    { emoji: "😴", label: "Tired",    color: "text-orange-600", bg: "bg-orange-50" },
   stressed: { emoji: "😰", label: "Stressed", color: "text-red-600",   bg: "bg-red-50" },
 };
 
+const BACKEND = import.meta.env.VITE_BACKEND_URL || "";
+const SCAN_INTERVAL_MS = 30000; // scan every 30s — conservative API usage
+
 export default function DriverStatus({ emotion, setEmotion, gps }) {
-  const videoRef  = useRef(null);
-  const [camReady, setCamReady]         = useState(false);
-  const [presageReady, setPresageReady] = useState(false);
-  const [presageError, setPresageError] = useState(null);
-  const presageKey = import.meta.env.VITE_PRESAGE_API_KEY;
+  const videoRef    = useRef(null);
+  const canvasRef   = useRef(null);
   const intervalRef = useRef(null);
+
+  const [camReady,   setCamReady]   = useState(false);
+  const [scanning,   setScanning]   = useState(false);
+  const [lastScan,   setLastScan]   = useState(null); // time of last scan
+  const [countdown,  setCountdown]  = useState(null); // seconds until next scan
 
   const cfg = EMOTION_CONFIG[emotion] || EMOTION_CONFIG.neutral;
 
+  // ─── Camera init ──────────────────────────────
   useEffect(() => {
     let stream;
-
-    async function init() {
-      // ── 1. Start camera ──────────────────────────
+    async function startCamera() {
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: "user", width: 320, height: 240 }
         });
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
-          // Wait for video to actually be playing before Presage analyze
-          await new Promise((resolve) => {
-            videoRef.current.onloadedmetadata = () => {
-              videoRef.current.play().then(resolve).catch(resolve);
-            };
-          });
           setCamReady(true);
         }
       } catch (e) {
-        console.error("Camera error:", e.message);
-        return;
+        console.warn("Camera error:", e.message);
       }
-
-      // ── 2. Init Presage ──────────────────────────
-      // window.Presage is injected by the SDK script in index.html
-      if (!window.Presage) {
-        setPresageError("Presage SDK not loaded");
-        console.warn("window.Presage not found — check SDK script tag in index.html");
-        return;
-      }
-      if (!presageKey || presageKey === "your_presage_key_here") {
-        setPresageError("No Presage API key");
-        console.warn("VITE_PRESAGE_API_KEY not set in .env");
-        return;
-      }
-
-      try {
-        await window.Presage.init({ apiKey: presageKey });
-        setPresageReady(true);
-        console.log("Presage initialized ✓");
-      } catch (e) {
-        setPresageError(`Presage init failed: ${e.message}`);
-        console.error("Presage init error:", e);
-        return;
-      }
-
-      // ── 3. Run analysis every 5 seconds ──────────
-      intervalRef.current = setInterval(async () => {
-        if (!videoRef.current || !presageReady) return;
-        try {
-          const result = await window.Presage.analyze(videoRef.current);
-          if (!result) return;
-
-          const engagement = result.engagement ?? 1;
-          const valence    = result.valence    ?? 0;
-          const arousal    = result.arousal    ?? 0;
-
-          // Thresholds based on Presage docs:
-          // engagement: 0–1 (how engaged/alert)
-          // valence: -1 to 1 (negative = unhappy/stressed, positive = happy)
-          // arousal: -1 to 1 (negative = tired/sleepy, positive = energized)
-          if (engagement < 0.25 || arousal < -0.4) {
-            setEmotion("tired");
-          } else if (valence < -0.25 && arousal > 0.1) {
-            setEmotion("stressed");
-          } else if (valence > 0.3 && engagement > 0.5) {
-            setEmotion("happy");
-          } else {
-            setEmotion("neutral");
-          }
-        } catch (e) {
-          // Silently skip failed frames — video might not be ready yet
-        }
-      }, 5000);
     }
-
-    init();
-
+    startCamera();
     return () => {
       clearInterval(intervalRef.current);
       stream?.getTracks().forEach(t => t.stop());
     };
-  }, [presageKey]);
+  }, []);
 
-  // Re-run analysis loop once presageReady flips to true
+  // ─── Countdown timer (UI only) ────────────────
   useEffect(() => {
-    if (!presageReady || !camReady) return;
-    clearInterval(intervalRef.current);
-    intervalRef.current = setInterval(async () => {
-      if (!videoRef.current) return;
-      try {
-        const result = await window.Presage.analyze(videoRef.current);
-        if (!result) return;
-        const engagement = result.engagement ?? 1;
-        const valence    = result.valence    ?? 0;
-        const arousal    = result.arousal    ?? 0;
-        if (engagement < 0.25 || arousal < -0.4) {
-          setEmotion("tired");
-        } else if (valence < -0.25 && arousal > 0.1) {
-          setEmotion("stressed");
-        } else if (valence > 0.3 && engagement > 0.5) {
-          setEmotion("happy");
-        } else {
-          setEmotion("neutral");
-        }
-      } catch {}
-    }, 5000);
-    return () => clearInterval(intervalRef.current);
-  }, [presageReady, camReady]);
+    if (!camReady) return;
+    // First scan after 3s
+    const firstScan = setTimeout(() => analyzeEmotion(), 3000);
+    // Then every 30s
+    intervalRef.current = setInterval(() => analyzeEmotion(), SCAN_INTERVAL_MS);
+
+    // Countdown display — updates every second
+    let nextScanAt = Date.now() + 3000;
+    const countdownTick = setInterval(() => {
+      const secs = Math.max(0, Math.round((nextScanAt - Date.now()) / 1000));
+      setCountdown(secs);
+      if (secs === 0) nextScanAt = Date.now() + SCAN_INTERVAL_MS;
+    }, 1000);
+
+    return () => {
+      clearTimeout(firstScan);
+      clearInterval(intervalRef.current);
+      clearInterval(countdownTick);
+    };
+  }, [camReady]);
+
+  // ─── Capture frame → base64 JPEG ──────────────
+  const captureFrame = () => {
+    const video  = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || video.readyState < 2) return null;
+    canvas.width  = 320;
+    canvas.height = 240;
+    const ctx = canvas.getContext("2d");
+    // Mirror flip so it matches what user sees
+    ctx.translate(320, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, 0, 0, 320, 240);
+    // Return base64 without data URL prefix
+    return canvas.toDataURL("image/jpeg", 0.7).split(",")[1];
+  };
+
+  // ─── Call backend /api/emotion ────────────────
+  const analyzeEmotion = async () => {
+    if (scanning) return;
+    const frame = captureFrame();
+    if (!frame) return;
+
+    setScanning(true);
+    try {
+      const res = await fetch(`${BACKEND}/api/emotion`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: frame }),
+      });
+      const data = await res.json();
+      if (data.emotion) {
+        setEmotion(data.emotion);
+        setLastScan(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+      }
+    } catch (e) {
+      console.warn("Emotion scan error:", e.message);
+    } finally {
+      setScanning(false);
+    }
+  };
 
   return (
     <div className="bg-white rounded-3xl border border-gray-100 overflow-hidden shadow-sm">
       <div className="p-4">
 
-        {/* Status Header */}
+        {/* Header */}
         <div className="flex items-center justify-between mb-3">
           <span className="text-sm font-600 text-gray-700">Driver Status</span>
           <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full ${cfg.bg}`}>
@@ -142,8 +123,8 @@ export default function DriverStatus({ emotion, setEmotion, gps }) {
           </div>
         </div>
 
-        {/* Camera Feed */}
-        <div className="relative rounded-2xl overflow-hidden bg-gray-100" style={{ aspectRatio: '4/3' }}>
+        {/* Camera */}
+        <div className="relative rounded-2xl overflow-hidden bg-gray-100" style={{ aspectRatio: "4/3" }}>
           <video
             ref={videoRef}
             autoPlay
@@ -151,6 +132,7 @@ export default function DriverStatus({ emotion, setEmotion, gps }) {
             playsInline
             className="w-full h-full object-cover scale-x-[-1]"
           />
+          <canvas ref={canvasRef} className="hidden" />
 
           {!camReady && (
             <div className="absolute inset-0 flex items-center justify-center bg-gray-100">
@@ -161,38 +143,42 @@ export default function DriverStatus({ emotion, setEmotion, gps }) {
             </div>
           )}
 
-          {/* Presage status badge */}
+          {/* Status badge */}
           {camReady && (
             <div className={`absolute top-2 right-2 px-2 py-1 rounded-lg text-[10px] font-600 ${
-              presageReady
-                ? 'bg-green-500 text-white'
-                : presageError
-                  ? 'bg-red-500 text-white'
-                  : 'bg-black bg-opacity-50 text-gray-300'
+              scanning
+                ? "bg-yellow-500 text-white"
+                : "bg-black bg-opacity-50 text-white"
             }`}>
-              {presageReady
-                ? '● Presage Live'
-                : presageError
-                  ? '✕ ' + presageError
-                  : '○ Initializing...'}
+              {scanning
+                ? "● Scanning..."
+                : lastScan
+                  ? `✓ ${lastScan}`
+                  : countdown !== null
+                    ? `Next scan in ${countdown}s`
+                    : "● AI Vision"}
             </div>
           )}
 
-          {/* Alert overlay for tired/stressed */}
+          {/* Alert overlay */}
           {(emotion === "tired" || emotion === "stressed") && (
-            <div className="absolute bottom-0 left-0 right-0 bg-red-600 bg-opacity-90 py-2 px-3">
+            <div className={`absolute bottom-0 left-0 right-0 py-2 px-3 ${
+              emotion === "stressed" ? "bg-red-600" : "bg-orange-500"
+            } bg-opacity-90`}>
               <p className="text-white text-xs font-600 text-center">
-                {emotion === "tired" ? "😴 Fatigue detected — consider a break" : "😰 Stress detected"}
+                {emotion === "tired"
+                  ? "😴 Fatigue detected — consider a break"
+                  : "😰 Stress detected — take a breath"}
               </p>
             </div>
           )}
         </div>
 
-        {/* GPS Location */}
+        {/* GPS */}
         {gps.lat && (
           <div className="flex items-center gap-2 mt-3 px-1">
             <MapPin size={12} className="text-gray-400 flex-shrink-0" />
-            <span className="text-xs text-gray-400 font-400 truncate">
+            <span className="text-xs text-gray-400 truncate">
               {gps.lat.toFixed(4)}°, {gps.lng.toFixed(4)}°
             </span>
             <a

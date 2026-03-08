@@ -38,7 +38,7 @@ gemini_client = genai.Client(api_key=GEMINI_KEY)
 db = None
 if MONGODB_URI and MONGODB_URI != "your_mongodb_uri":
     try:
-        mongo_client = AsyncIOMotorClient(MONGODB_URI, serverSelectionTimeoutMS=3000, tls=True, tlsAllowInvalidCertificates=True)
+        mongo_client = AsyncIOMotorClient(MONGODB_URI, serverSelectionTimeoutMS=3000)
         db = mongo_client.codriver
         logging.info("MongoDB connected")
     except Exception as e:
@@ -211,7 +211,7 @@ HOW TO RESPOND BY TRIGGER:
 
     try:
         response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash-preview-05-20",
+            model="gemini-2.0-flash",
             contents=full_prompt,
             config=types.GenerateContentConfig(
                 temperature=0.82,
@@ -419,7 +419,7 @@ Rules:
 
     try:
         response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash-preview-05-20",
+            model="gemini-2.0-flash",
             contents=prompt,
             config=types.GenerateContentConfig(max_output_tokens=150)
         )
@@ -448,6 +448,54 @@ async def music_search(data: dict):
         "spotifyUrl": f"https://open.spotify.com/search/{encoded}",
         "query": query
     }
+
+# ─────────────────────────────────────────────────────
+#  EMOTION — Gemini Vision (called every 30s from frontend)
+# ─────────────────────────────────────────────────────
+
+class EmotionRequest(BaseModel):
+    image: str  # base64 JPEG, no data URL prefix
+
+@app.post("/api/emotion")
+async def detect_emotion(req: EmotionRequest):
+    """
+    Accepts a base64 JPEG frame from the front camera.
+    Returns one word: neutral | happy | tired | stressed.
+    Uses gemini-2.0-flash vision — fast and cheap.
+    Called every 30s so API usage stays very low.
+    """
+    try:
+        response = gemini_client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[
+                types.Part.from_bytes(
+                    data=base64.b64decode(req.image),
+                    mime_type="image/jpeg"
+                ),
+                types.Part.from_text(
+                    "Look at this driver's face. Respond with exactly ONE word only — "
+                    "no punctuation, no explanation: "
+                    "neutral (alert and calm), "
+                    "happy (smiling or positive), "
+                    "tired (eyes drooping, yawning, head drooping), or "
+                    "stressed (tense, frowning, gripping). "
+                    "If no face is visible, respond: neutral"
+                )
+            ],
+            config=types.GenerateContentConfig(
+                temperature=0.1,   # low temp = consistent single-word answers
+                max_output_tokens=5,
+            )
+        )
+        raw = response.text.strip().lower().split()[0]
+        valid = {"neutral", "happy", "tired", "stressed"}
+        emotion = raw if raw in valid else "neutral"
+        logging.info(f"Emotion detected: {emotion}")
+        return {"emotion": emotion}
+    except Exception as e:
+        logging.error(f"Emotion detection error: {e}")
+        return {"emotion": "neutral"}
+
 
 if __name__ == "__main__":
     import uvicorn
