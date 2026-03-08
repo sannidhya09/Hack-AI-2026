@@ -337,14 +337,24 @@ async def analyze(req: AnalyzeRequest):
     lat = req.gps.get("lat")
     lng = req.gps.get("lng")
 
-    # Fetch all context in parallel — fast
+    # Location cache — only re-fetch every 60s to cut AI response latency
     speed_limit, location_name, weather = 0, "", ""
     if lat and lng:
-        speed_limit, location_name, weather = await asyncio.gather(
-            get_speed_limit(lat, lng),
-            get_location_name(lat, lng),
-            get_weather(lat, lng),
-        )
+        import time as _t
+        now_ts = _t.monotonic()
+        if now_ts - _loc_cache["ts"] > LOC_CACHE_TTL:
+            speed_limit, location_name, weather = await asyncio.gather(
+                get_speed_limit(lat, lng),
+                get_location_name(lat, lng),
+                get_weather(lat, lng),
+            )
+            _loc_cache.update({"ts": now_ts, "location": location_name,
+                                "weather": weather, "speed_limit": speed_limit})
+            logging.info(f"Location cache refreshed: {location_name}")
+        else:
+            speed_limit   = _loc_cache["speed_limit"]
+            location_name = _loc_cache["location"]
+            weather       = _loc_cache["weather"]
 
     reply = await get_ai_response(req, speed_limit, location_name, weather)
     audio = await text_to_speech(reply)
@@ -452,7 +462,7 @@ async def detect_emotion(req: EmotionRequest):
             config=types.GenerateContentConfig(
                 temperature=0.1,
                 max_output_tokens=5,
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
+
             )
         )
         raw = "".join(c for c in response.text.strip().lower() if c.isalpha())
