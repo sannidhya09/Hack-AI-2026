@@ -547,11 +547,7 @@ export default function App() {
           className="w-full bg-red-600 text-white font-bold py-5 rounded-3xl text-xl shadow-lg active:scale-95 transition-transform">
           Start CoDriver 🚗
         </button>
-        <button onClick={connectBLE}
-          className="w-full bg-gray-800 text-white font-bold py-4 rounded-3xl text-base shadow active:scale-95 transition-transform mt-3">
-          Connect Sensor 📡
-        </button>
-        <p className="text-xs text-gray-300 mt-4 text-center">Tap Start first, then Connect Sensor</p>
+        <p className="text-xs text-gray-300 mt-4 text-center">Tap to enable voice & audio</p>
       </div>
     );
   }
@@ -575,6 +571,14 @@ export default function App() {
           <StatsRow hardBrakes={hardBrakes} sharpTurns={sharpTurns} hardAccels={hardAccels}
             currentGForce={currentGForce} tripStartTime={tripStartTimeRef.current} />
           <DriverStatus emotion={emotion} setEmotion={setEmotion} gps={gps} />
+
+          {/* Sensor connect — shown until hardware is connected */}
+          {!connected && (
+            <button onClick={connectBLE}
+              className="w-full bg-gray-800 text-white font-bold py-3 rounded-2xl text-sm shadow active:scale-95 transition-transform">
+              📡 Connect Sensor
+            </button>
+          )}
 
           <div className="flex gap-3">
             {!tripStarted ? (
