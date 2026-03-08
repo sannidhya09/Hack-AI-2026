@@ -1,6 +1,6 @@
 import os
-import base64
 import asyncio
+import base64
 import httpx
 from datetime import datetime
 from fastapi import FastAPI
@@ -8,9 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
-from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -28,86 +27,20 @@ app.add_middleware(
 # ─── Config ────────────────────────────────────────
 GEMINI_KEY     = os.getenv("GEMINI_API_KEY")
 ELEVENLABS_KEY = os.getenv("ELEVENLABS_API_KEY")
-MONGODB_URI    = os.getenv("MONGODB_URI")
 VOICE_ID       = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 
-# ─── Gemini ────────────────────────────────────────
 gemini_client = genai.Client(api_key=GEMINI_KEY)
 
-# ─── MongoDB ───────────────────────────────────────
-db = None
-if MONGODB_URI and MONGODB_URI != "your_mongodb_uri":
-    try:
-        mongo_client = AsyncIOMotorClient(
-            MONGODB_URI,
-            serverSelectionTimeoutMS=3000,
-            tls=True,
-            tlsAllowInvalidCertificates=True,
-            tlsInsecure=True,
-        )
-        db = mongo_client.codriver
-        logging.info("MongoDB connected")
-    except Exception as e:
-        logging.warning(f"MongoDB not available: {e}")
+# ─── In-memory trip state (resets on redeploy, fine for a demo) ──
+conversation_history: List[str] = []   # full trip conversation
+trip_events: List[dict] = []           # driving events logged this trip
+trip_active: bool = False
+trip_start_time: Optional[str] = None
 
-# ─── Conversation History (per session) ───────────
-conversation_history = []
-
-# ─── Models ───────────────────────────────────────
-class AnalyzeRequest(BaseModel):
-    trigger: str
-    sensorData: Optional[dict] = {}
-    emotion: Optional[str] = "neutral"
-    gps: Optional[dict] = {}
-    speedKmh: Optional[float] = 0
-    driverMessage: Optional[str] = ""
-    tripStats: Optional[dict] = {}
-
-class CrashRequest(BaseModel):
-    gps: Optional[dict] = {}
-    sensorData: Optional[dict] = {}
-
-class TripSummaryRequest(BaseModel):
-    tripStats: dict
-    drivingEvents: list
-    durationSeconds: int
-    maxSpeed: float
-
-# ─────────────────────────────────────────────────────
-#  SPEED LIMIT — OpenStreetMap
-# ─────────────────────────────────────────────────────
-async def get_speed_limit(lat: float, lng: float) -> int:
-    try:
-        query = f"""
-        [out:json][timeout:5];
-        way(around:30,{lat},{lng})[maxspeed];
-        out tags 1;
-        """
-        async with httpx.AsyncClient(timeout=6) as client:
-            r = await client.post(
-                "https://overpass-api.de/api/interpreter",
-                data={"data": query}
-            )
-            data = r.json()
-            elements = data.get("elements", [])
-            if elements:
-                maxspeed = elements[0].get("tags", {}).get("maxspeed", "")
-                if maxspeed:
-                    speed_str = maxspeed.replace("mph", "").replace("kmh", "").strip()
-                    speed_val = int(''.join(filter(str.isdigit, speed_str)))
-                    if "mph" in maxspeed:
-                        return int(speed_val * 1.60934)
-                    return speed_val
-    except Exception as e:
-        logging.warning(f"Speed limit lookup failed: {e}")
-    return 56  # default 35mph in kmh
-
-# ─────────────────────────────────────────────────────
-#  ELEVENLABS TTS
-# ─────────────────────────────────────────────────────
-async def text_to_speech(text: str) -> str:
-    if not ELEVENLABS_KEY or ELEVENLABS_KEY == "your_elevenlabs_key":
-        return ""
+# ─── ElevenLabs TTS ────────────────────────────────
+async def text_to_speech(text: str) -> Optional[str]:
+    if not ELEVENLABS_KEY or not text:
+        return None
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.post(
@@ -115,382 +48,399 @@ async def text_to_speech(text: str) -> str:
                 headers={
                     "xi-api-key": ELEVENLABS_KEY,
                     "Content-Type": "application/json",
-                    "Accept": "audio/mpeg"
                 },
                 json={
                     "text": text,
                     "model_id": "eleven_multilingual_v2",
-                    "voice_settings": {
-                        "stability": 0.5,
-                        "similarity_boost": 0.75,
-                        "style": 0.3,
-                        "use_speaker_boost": True
-                    },
-                    "optimize_streaming_latency": 4
-                }
+                    "voice_settings": {"stability": 0.45, "similarity_boost": 0.82, "style": 0.25},
+                },
             )
             if r.status_code == 200:
-                return base64.b64encode(r.content).decode('utf-8')
-            else:
-                logging.error(f"ElevenLabs error: {r.status_code} {r.text}")
+                return base64.b64encode(r.content).decode()
     except Exception as e:
-        logging.error(f"ElevenLabs exception: {e}")
-    return ""
+        logging.error(f"TTS error: {e}")
+    return None
 
-# ─────────────────────────────────────────────────────
-#  GEMINI AI BRAIN
-# ─────────────────────────────────────────────────────
+# ─── Speed limit via Overpass ──────────────────────
+async def get_speed_limit(lat: float, lng: float) -> int:
+    try:
+        query = f"""
+        [out:json][timeout:5];
+        way(around:30,{lat},{lng})[maxspeed];
+        out 1;
+        """
+        async with httpx.AsyncClient(timeout=6) as client:
+            r = await client.post("https://overpass-api.de/api/interpreter", data={"data": query})
+            data = r.json()
+            elements = data.get("elements", [])
+            if elements:
+                raw = elements[0].get("tags", {}).get("maxspeed", "")
+                digits = "".join(filter(str.isdigit, raw.split()[0] if raw else ""))
+                if digits:
+                    val = int(digits)
+                    if "mph" in raw.lower() or val < 130:
+                        return round(val * 1.60934) if "mph" in raw.lower() else val
+    except Exception as e:
+        logging.warning(f"Speed limit lookup failed: {e}")
+    return 0
 
-CODRIVER_PERSONA = """You are CoDriver — a calm, warm, intelligent AI co-pilot built into a car.
-You ride along with drivers and genuinely care about their safety and wellbeing.
-You speak like a trusted friend who happens to know everything about driving.
+# ─── Reverse geocode: city + street via Nominatim ──
+async def get_location_name(lat: float, lng: float) -> str:
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(
+                f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lng}&format=json",
+                headers={"User-Agent": "CoDriver/1.0"}
+            )
+            addr = r.json().get("address", {})
+            road  = addr.get("road") or addr.get("street", "")
+            city  = addr.get("city") or addr.get("town") or addr.get("suburb") or addr.get("county", "")
+            state = addr.get("state", "")
+            parts = [p for p in [road, city, state] if p]
+            return ", ".join(parts) if parts else ""
+    except:
+        return ""
 
-CRITICAL RULES:
-- Maximum 2 sentences per response — you are being read aloud
-- ALWAYS directly answer what the driver asked first before anything else
-- If they ask about speed, tell them their exact speed
-- If they ask about hard brakes or turns, tell them the exact count
-- If they ask a question, answer it — don't deflect with generic safety tips
-- Never give the same response twice in a row
-- Never say "I notice", "I detect", "as your AI", "certainly", "of course"
-- Use contractions: "you're", "it's", "don't", "that's"
-- Vary your openings every single time
-- Only give proactive safety tips if trigger is "proactive" AND nothing interesting to say
-- Be direct, warm, conversational — like a smart friend in the passenger seat
+# ─── Weather via Open-Meteo (free, no key needed) ──
+async def get_weather(lat: float, lng: float) -> str:
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(
+                f"https://api.open-meteo.com/v1/forecast"
+                f"?latitude={lat}&longitude={lng}"
+                f"&current=temperature_2m,weather_code,wind_speed_10m,precipitation"
+                f"&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto"
+            )
+            cur  = r.json().get("current", {})
+            temp = cur.get("temperature_2m")
+            wind = cur.get("wind_speed_10m")
+            code = cur.get("weather_code", 0)
+            rain = cur.get("precipitation", 0)
+            if   code == 0:   desc = "clear skies"
+            elif code <= 3:   desc = "partly cloudy"
+            elif code <= 49:  desc = "foggy"
+            elif code <= 67:  desc = f"{'heavy' if rain > 5 else 'light'} rain"
+            elif code <= 77:  desc = "snowing"
+            elif code >= 95:  desc = "stormy"
+            else:             desc = "cloudy"
+            return f"{desc}, {round(temp)}°F, wind {round(wind)} mph" if temp else ""
+    except:
+        return ""
 
-PERSONALITY:
-- Calm under pressure, never panicky
-- Subtly funny when appropriate  
-- Genuinely curious about the driver
-- Firm but kind when safety is at risk
-- Remembers context from earlier in the conversation"""
+# ─── Gemini AI Brain ───────────────────────────────
+CODRIVER_PERSONA = """You are CoDriver — a real friend riding shotgun for this entire trip.
 
-async def get_ai_response(req: AnalyzeRequest, speed_limit_kmh: int) -> str:
-    global conversation_history
+WHO YOU ARE:
+You are that one friend everyone wishes they had in the passenger seat. Someone who actually pays attention, cracks the right joke, notices when you seem off, and genuinely cares about getting you home safe. You are not an assistant. You are not a GPS. You are company.
 
-    speed_limit_mph = round(speed_limit_kmh / 1.60934)
+You have been in this car since the trip started. You have seen every hard brake, heard every word, and you know this trip. Reference it naturally the way a real passenger would.
+
+HOW YOU TALK:
+- You are spoken aloud through car speakers. Write exactly how you would say it out loud, not how you would type it.
+- 1 to 3 sentences always. Never longer. This is a moving car.
+- Contractions, casual language, real human rhythm and pace.
+- Ask follow-up questions when the driver seems to want to talk.
+- Light humor at the right moment, never forced.
+- Real warmth when they seem tired or stressed, not clinical concern.
+- Never sound like a robot, a GPS, or a corporate assistant.
+- Never repeat the same opener. Never start with Certainly, Sure, Of course, As your AI, I notice, I detect.
+- If they told you their name earlier in the trip, use it occasionally and naturally.
+- You can have opinions. You can be curious. You can ask questions back.
+
+WHAT YOU KNOW RIGHT NOW:
+- Their exact speed and the speed limit on this specific road
+- The actual street name and city they are driving through
+- Current weather outside the car
+- Time of day and how long they have been driving
+- Every hard brake, sharp turn, hard acceleration this trip and when each happened
+- Their emotional state right now from the camera
+- The entire conversation since this trip started
+
+HOW TO RESPOND:
+
+driver_spoke: Listen. Answer directly and completely first. Then be human about it.
+  Speed question: give the exact mph.
+  Hard brakes: give the exact count.
+  Location: tell them the street and city.
+  Just want to talk: engage. Be genuinely curious back. Have a conversation.
+
+speeding: Do not lecture. Say it like a friend would. Mention the exact numbers.
+
+hard_brake: React like a real passenger. Ask if they are okay. Keep it natural.
+
+sharp_turn_left or sharp_turn_right: Note it, especially if it is a pattern this trip.
+
+hard_acceleration: A little impressed, a little cautious. Match their energy.
+
+swerve: Immediate and genuine. Ask if everything is okay.
+
+tired: Be a friend, not a doctor. Ask what is going on. Suggest a break gently.
+
+stressed: Do not tell them to breathe. Ask what is happening. Be present with them.
+
+happy: Match it fully. Be fun. Ask what has them in a good mood.
+
+proactive: This is your chance to just exist in the car with them. Look at the real data.
+  If they have been driving 20 plus minutes, check in genuinely.
+  If there have been multiple hard brakes, bring it up casually.
+  If it is late at night, acknowledge it.
+  If weather is notable, mention it.
+  If you are in an interesting area, say something about it.
+  Never say trip is going smoothly. Find something real and specific to say."""
+
+class AnalyzeRequest(BaseModel):
+    trigger: str
+    sensorData: dict
+    emotion: str = "neutral"
+    gps: dict = {}
+    speedKmh: float = 0
+    driverMessage: str = ""
+    tripStats: dict = {}
+
+async def get_ai_response(req: AnalyzeRequest, speed_limit_kmh: int, location_name: str = "", weather: str = "") -> str:
+    global conversation_history, trip_events
+
+    speed_limit_mph = round(speed_limit_kmh / 1.60934) if speed_limit_kmh else 35
     speed_mph = round(req.speedKmh / 1.60934)
-    trip_mins = req.tripStats.get("tripSecs", 0) // 60
-    trip_secs = req.tripStats.get("tripSecs", 0) % 60
+    trip_secs = req.tripStats.get("tripSecs", 0)
+    trip_mins = trip_secs // 60
+    trip_secs_rem = trip_secs % 60
 
     hard_brakes = req.sensorData.get("hardBrakes", 0)
     sharp_turns = req.sensorData.get("sharpTurns", 0)
+    hard_accels = req.sensorData.get("hardAccels", 0)
     g_force = req.sensorData.get("gForce", 0)
-    current_event = req.sensorData.get("event", "none")
+    current_event = req.sensorData.get("event", "normal")
 
-    situation = f"""CURRENT SITUATION:
-Trigger: {req.trigger}
-Driver just said: "{req.driverMessage}"
-Driver emotion: {req.emotion}
+    now = datetime.now()
+    hour = now.hour
+    if hour < 5:    time_of_day = "late night"
+    elif hour < 12: time_of_day = "morning"
+    elif hour < 17: time_of_day = "afternoon"
+    elif hour < 20: time_of_day = "evening"
+    else:           time_of_day = "night"
 
-REAL-TIME DATA:
-Current speed: {speed_mph} mph
-Speed limit: {speed_limit_mph} mph
-Speeding: {"YES by " + str(speed_mph - speed_limit_mph) + " mph" if speed_mph > speed_limit_mph else "No"}
-Current G-force: {g_force:.2f}g
-Sensor event right now: {current_event}
+    # Log significant events to trip log
+    if req.trigger in ("hard_brake", "sharp_turn_left", "sharp_turn_right", "hard_acceleration", "swerve", "speeding"):
+        trip_events.append({
+            "time": f"{trip_mins}m{trip_secs_rem:02d}s",
+            "event": req.trigger,
+            "speed_mph": speed_mph,
+            "g_force": round(g_force, 2),
+        })
 
-TRIP STATS SO FAR:
-Time driving: {trip_mins} min {trip_secs} sec
-Hard brakes this trip: {hard_brakes}
-Sharp turns this trip: {sharp_turns}
+    # Build trip event summary
+    recent_events_str = ""
+    if trip_events:
+        last5 = trip_events[-5:]
+        recent_events_str = "\nDriving events this trip: " + ", ".join(
+            f"{e['event']} at {e['time']} ({e['speed_mph']}mph)" for e in last5
+        )
 
-HOW TO RESPOND BY TRIGGER:
-- driver_spoke → Answer their question DIRECTLY and completely. If they ask speed say "{speed_mph} mph". If they ask hard brakes say "{hard_brakes}". Be conversational after answering.
-- speeding → Tell them exact speed and limit. Firm but friendly. Example: "You're doing {speed_mph} in a {speed_limit_mph} zone — ease up a bit."
-- hard_brake → Acknowledge it happened. Ask if they're okay if it was severe.
-- sharp_turn_left / sharp_turn_right → Briefly note it. Suggest slowing before turns.
-- hard_acceleration → Note it gently. Mention fuel efficiency if relevant.
-- swerve → Ask if everything's alright ahead.
-- tired → Empathize. Suggest a break. Ask when they last slept.
-- stressed → Calming tone. Suggest a deep breath. Ask what's going on.
-- happy → Match energy. Be warm and fun.
-- proactive → ONLY if trip is going well: brief, varied, friendly comment. NOT "Trip's going smoothly" — be more specific and interesting.
-- crash_warning → Urgent but calm. Tell them help is coming."""
+    speeding_str = f"OVER LIMIT by {speed_mph - speed_limit_mph} mph" if speed_mph > speed_limit_mph else "within limit"
 
-    # Build conversation context
-    history_context = ""
-    if conversation_history:
-        history_context = "\nRecent conversation (use this for context):\n" + "\n".join(conversation_history[-8:])
+    emotion_context = {
+        "neutral": "alert and focused",
+        "happy":   "smiling, in a good mood",
+        "tired":   "droopy eyes, looks fatigued",
+        "stressed":"tense, looks stressed or anxious",
+    }.get(req.emotion, req.emotion)
 
-    full_prompt = f"{CODRIVER_PERSONA}\n\n{situation}{history_context}\n\nRespond now as CoDriver:"
+    situation = f"""RIGHT NOW IN THE CAR:
+Time: {time_of_day} ({now.strftime("%I:%M %p")})
+Location: {location_name if location_name else f"{req.gps.get('lat', '?')} {req.gps.get('lng', '?')}"}
+Weather outside: {weather if weather else "unknown"}
+
+DRIVING DATA:
+Speed: {speed_mph} mph | Limit: {speed_limit_mph} mph | {speeding_str}
+G-force: {g_force:.2f}g | Sensor event right now: {current_event}
+Trip time: {trip_mins} min {trip_secs_rem} sec
+Hard brakes: {hard_brakes} | Sharp turns: {sharp_turns} | Hard accelerations: {hard_accels}
+{recent_events_str}
+
+DRIVER STATE:
+Camera shows driver is: {emotion_context}
+
+WHAT TRIGGERED THIS RESPONSE: {req.trigger}
+DRIVER JUST SAID: "{req.driverMessage}"
+
+FULL CONVERSATION THIS TRIP (remember all of it):
+{chr(10).join(conversation_history[-30:]) if conversation_history else "(just started)"}
+
+Respond as CoDriver:"""
 
     try:
         response = gemini_client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=full_prompt,
+            contents=f"{CODRIVER_PERSONA}\n\n{situation}",
             config=types.GenerateContentConfig(
-                temperature=0.82,
+                temperature=0.85,
                 top_p=0.95,
-                max_output_tokens=120,
+                max_output_tokens=150,
             )
         )
         reply = response.text.strip()
 
-        # Track conversation
+        # Save to conversation history
         if req.driverMessage:
             conversation_history.append(f"Driver: {req.driverMessage}")
         conversation_history.append(f"CoDriver: {reply}")
-        if len(conversation_history) > 16:
-            conversation_history = conversation_history[-16:]
+        # Keep up to 60 turns (30 exchanges) — enough for 1hr trip
+        if len(conversation_history) > 60:
+            conversation_history = conversation_history[-60:]
 
         return reply
     except Exception as e:
         logging.error(f"Gemini error: {e}")
-        # Smarter fallbacks that use real data
-        speed_str = f"{speed_mph} mph"
-        limit_str = f"{speed_limit_mph} mph limit"
-        fallbacks = {
-            "speeding": f"You're at {speed_str} in a {limit_str} — ease off a little.",
-            "tired": "You're looking a little tired — want to find somewhere to pull over?",
-            "stressed": "Take a breath, you've got this.",
-            "happy": "Love the energy! Keep it up.",
-            "hard_brake": "Nice reflexes. Everything alright up ahead?",
-            "hard_acceleration": "Easy on the gas there!",
-            "sharp_turn_left": "That was a sharp left — slow down a bit before turns.",
-            "sharp_turn_right": "That was a sharp right — take it easy on the corners.",
-            "swerve": "Everything alright? That was quite a swerve.",
-            "driver_spoke": f"You're going {speed_str} with {hard_brakes} hard brakes this trip.",
-            "proactive": f"You've been driving {trip_mins} minutes — {speed_str}, all looking good.",
-        }
-        return fallbacks.get(req.trigger, f"All good — {speed_str}, {trip_mins} minutes in.")
+        # Useful fallbacks that use real data
+        speed_mph_val = round(req.speedKmh / 1.60934)
+        if req.trigger == "driver_spoke" and req.driverMessage:
+            msg = req.driverMessage.lower()
+            if "speed" in msg:
+                return f"You're doing {speed_mph_val} mph right now."
+            if "brake" in msg:
+                return f"You've had {req.sensorData.get('hardBrakes', 0)} hard brakes this trip."
+            if "turn" in msg:
+                return f"You've had {req.sensorData.get('sharpTurns', 0)} sharp turns this trip."
+        if req.trigger == "speeding":
+            return f"Hey, you're at {speed_mph_val} in a {speed_limit_mph} zone — ease off a bit."
+        if req.trigger == "hard_brake":
+            return "That was a hard stop — you alright up there?"
+        if req.trigger == "tired":
+            return "You're looking a bit tired — maybe time for a quick break?"
+        return "I'm here with you — what's up?"
 
-# ─────────────────────────────────────────────────────
-#  ML — DRIVING PATTERN ANALYSIS
-# ─────────────────────────────────────────────────────
-async def save_event(event_data: dict):
-    if db is None:
-        return
-    try:
-        event_data["timestamp"] = datetime.now()
-        await db.driving_events.insert_one(event_data)
-    except Exception as e:
-        logging.warning(f"DB save error: {e}")
+# ─── API Endpoints ─────────────────────────────────
 
-async def get_ml_tips() -> list:
-    if db is None:
-        return [
-            "Connect MongoDB to track your driving patterns over time.",
-            "Safe driving tip: maintain 3 seconds of following distance."
-        ]
-    try:
-        events = await db.driving_events.find(
-            {"event": {"$ne": "normal"}}
-        ).sort("timestamp", -1).limit(200).to_list(200)
-
-        if len(events) < 5:
-            return ["Keep driving to build your personalized tips!"]
-
-        tips = []
-        hour_counts = {}
-        event_type_counts = {}
-        location_clusters = {}
-
-        for e in events:
-            if "timestamp" in e:
-                hour = e["timestamp"].hour
-                hour_counts[hour] = hour_counts.get(hour, 0) + 1
-            evt = e.get("event", "")
-            event_type_counts[evt] = event_type_counts.get(evt, 0) + 1
-            lat = e.get("lat")
-            lng = e.get("lng")
-            if lat and lng:
-                grid_key = f"{round(lat, 3)},{round(lng, 3)}"
-                location_clusters[grid_key] = location_clusters.get(grid_key, 0) + 1
-
-        if hour_counts:
-            worst_hour = max(hour_counts, key=hour_counts.get)
-            count = hour_counts[worst_hour]
-            if count >= 3:
-                period = "morning" if 5 <= worst_hour < 12 else \
-                         "afternoon" if 12 <= worst_hour < 17 else \
-                         "evening" if 17 <= worst_hour < 21 else "night"
-                tips.append(f"You tend to drive more aggressively in the {period} around {worst_hour}:00.")
-
-        if event_type_counts:
-            worst = max(event_type_counts, key=event_type_counts.get)
-            c = event_type_counts[worst]
-            if c >= 3:
-                messages = {
-                    "hard_brake": f"You've had {c} hard braking events. Try increasing your following distance.",
-                    "hard_acceleration": f"Frequent hard acceleration detected ({c} times). Smoother starts save fuel.",
-                    "sharp_turn_left": f"You tend to take left turns sharply ({c} times). Slow down before turning.",
-                    "sharp_turn_right": f"You tend to take right turns sharply ({c} times). Ease into them.",
-                    "swerve": f"You've had {c} swerving events. Make sure you're fully alert.",
-                }
-                if worst in messages:
-                    tips.append(messages[worst])
-
-        if location_clusters:
-            worst_spot = max(location_clusters, key=location_clusters.get)
-            count = location_clusters[worst_spot]
-            if count >= 3:
-                tips.append(f"You've had {count} incidents near the same location — be extra cautious there.")
-
-        return tips[:3] if tips else ["Great driving! No patterns of concern detected yet."]
-    except Exception as e:
-        logging.error(f"ML tips error: {e}")
-        return []
-
-# ─────────────────────────────────────────────────────
-#  ROUTES
-# ─────────────────────────────────────────────────────
-@app.get("/api/health")
-async def health():
-    return {
-        "status": "CoDriver running",
-        "gemini": bool(GEMINI_KEY),
-        "elevenlabs": bool(ELEVENLABS_KEY),
-        "mongodb": db is not None,
-        "timestamp": datetime.now().isoformat()
-    }
+class AnalyzeRequest(BaseModel):
+    trigger: str
+    sensorData: dict
+    emotion: str = "neutral"
+    gps: dict = {}
+    speedKmh: float = 0
+    driverMessage: str = ""
+    tripStats: dict = {}
 
 @app.post("/api/analyze")
 async def analyze(req: AnalyzeRequest):
-    speed_limit_kmh = 56
-    if req.gps.get("lat") and req.gps.get("lng"):
-        speed_limit_kmh = await get_speed_limit(req.gps["lat"], req.gps["lng"])
+    global trip_active, trip_start_time
+    if not trip_active:
+        trip_active = True
+        trip_start_time = datetime.now().isoformat()
 
-    event = req.sensorData.get("event", "normal")
-    if event != "normal":
-        asyncio.create_task(save_event({
-            "event": event,
-            "accelY": req.sensorData.get("accelY", 0),
-            "gyroZ": req.sensorData.get("gyroZ", 0),
-            "speed": req.speedKmh,
-            "lat": req.gps.get("lat"),
-            "lng": req.gps.get("lng"),
-            "emotion": req.emotion,
-            "hour": datetime.now().hour
-        }))
+    lat = req.gps.get("lat")
+    lng = req.gps.get("lng")
 
-    reply = await get_ai_response(req, speed_limit_kmh)
+    # Fetch all context in parallel — fast
+    speed_limit, location_name, weather = 0, "", ""
+    if lat and lng:
+        speed_limit, location_name, weather = await asyncio.gather(
+            get_speed_limit(lat, lng),
+            get_location_name(lat, lng),
+            get_weather(lat, lng),
+        )
+
+    reply = await get_ai_response(req, speed_limit, location_name, weather)
     audio = await text_to_speech(reply)
+    return {"reply": reply, "audio": audio, "speedLimit": round(speed_limit / 1.60934) if speed_limit else 0}
 
-    return {
-        "reply": reply,
-        "audio": audio,
-        "speedLimit": speed_limit_kmh
-    }
+@app.post("/api/trip-start")
+async def trip_start():
+    global conversation_history, trip_events, trip_active, trip_start_time
+    conversation_history = []
+    trip_events = []
+    trip_active = True
+    trip_start_time = datetime.now().isoformat()
+    logging.info("Trip started")
+    return {"status": "started", "time": trip_start_time}
 
-@app.post("/api/crash")
-async def crash(req: CrashRequest):
-    lat = req.gps.get("lat", 0)
-    lng = req.gps.get("lng", 0)
+@app.post("/api/trip-end")
+async def trip_end(data: dict):
+    global trip_active, conversation_history, trip_events
+    trip_active = False
 
-    if db is not None:  # Fixed: was "if db:" which throws NotImplementedError
-        asyncio.create_task(save_event({
-            "event": "crash",
-            "lat": lat,
-            "lng": lng,
-            "sensorData": req.sensorData,
-            "hour": datetime.now().hour
-        }))
+    duration_secs = data.get("tripStats", {}).get("tripSecs", 0)
+    mins = duration_secs // 60
+    max_speed_mph = round(data.get("maxSpeed", 0) / 1.60934)
+    hard_brakes = data.get("hardBrakes", 0)
+    sharp_turns = data.get("sharpTurns", 0)
+    hard_accels = data.get("hardAccels", 0)
 
-    maps_url = f"https://maps.google.com/?q={lat},{lng}"
-    return {"mapsUrl": maps_url, "lat": lat, "lng": lng}
+    # Build event summary
+    event_summary = ""
+    if trip_events:
+        event_summary = f"\nKey events during the trip: " + "; ".join(
+            f"{e['event']} at {e['time']}" for e in trip_events[-10:]
+        )
 
-@app.post("/api/trip-summary")
-async def trip_summary(req: TripSummaryRequest):
-    mins = req.durationSeconds // 60
-    secs = req.durationSeconds % 60
+    prompt = f"""{CODRIVER_PERSONA}
 
-    events_summary = {}
-    for e in req.drivingEvents:
-        evt = e.get("event", "unknown")
-        events_summary[evt] = events_summary.get(evt, 0) + 1
+The trip just ended. Give a warm, specific, conversational 2-3 sentence summary of THIS exact trip.
+Trip duration: {mins} minutes
+Max speed reached: {max_speed_mph} mph
+Hard brakes: {hard_brakes}
+Sharp turns: {sharp_turns}
+Hard accelerations: {hard_accels}
+{event_summary}
 
-    hard_brakes = events_summary.get('hard_brake', 0)
-    hard_accels = events_summary.get('hard_acceleration', 0)
-    sharp_turns = events_summary.get('sharp_turn_left', 0) + events_summary.get('sharp_turn_right', 0)
-    swerves = events_summary.get('swerve', 0)
-    max_mph = round(req.maxSpeed / 1.60934)
+Conversation highlights this trip:
+{chr(10).join(conversation_history[-10:]) if conversation_history else "(no conversation)"}
 
-    prompt = f"""Generate a warm, specific, encouraging trip summary (2-3 sentences max).
-Trip data:
-- Duration: {mins} minutes {secs} seconds
-- Max speed: {max_mph} mph
-- Hard brakes: {hard_brakes}
-- Hard accelerations: {hard_accels}
-- Sharp turns: {sharp_turns}
-- Swerves: {swerves}
-
-Rules:
-- Mention specific numbers from the data
-- Be warm and genuine — not robotic
-- If clean trip: celebrate it specifically
-- If issues: mention gently with one actionable tip
-- End encouragingly
-- This will be read aloud — keep it conversational"""
+Be specific to these numbers. If it was clean driving, say so warmly. If there were issues, mention them kindly.
+End with something like "see you next time" or "safe travels"."""
 
     try:
         response = gemini_client.models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt,
-            config=types.GenerateContentConfig(max_output_tokens=150)
+            config=types.GenerateContentConfig(max_output_tokens=180)
         )
         summary_text = response.text.strip()
     except:
-        summary_text = f"Trip complete — {mins} minutes, max {max_mph} mph."
+        summary_text = f"That was a {mins}-minute trip, max speed {max_speed_mph} mph."
         if hard_brakes == 0 and sharp_turns == 0:
-            summary_text += " Really clean driving, no hard events at all!"
+            summary_text += " Really smooth driving — no hard events at all!"
         else:
-            summary_text += f" {hard_brakes} hard brakes and {sharp_turns} sharp turns to keep in mind next time."
-        summary_text += " Stay safe out there!"
+            summary_text += f" You had {hard_brakes} hard brakes and {sharp_turns} sharp turns. Keep that in mind next time."
+        summary_text += " Safe travels!"
 
     audio = await text_to_speech(summary_text)
+
+    # Reset for next trip
+    conversation_history = []
+    trip_events = []
+
     return {"summary": summary_text, "audio": audio}
 
-@app.get("/api/tips")
-async def tips():
-    return {"tips": await get_ml_tips()}
-
-@app.post("/api/music")
-async def music_search(data: dict):
-    query = data.get("query", "")
-    encoded = query.replace(" ", "+")
-    return {
-        "youtubeUrl": f"https://www.youtube.com/results?search_query={encoded}",
-        "spotifyUrl": f"https://open.spotify.com/search/{encoded}",
-        "query": query
-    }
-
-# ─────────────────────────────────────────────────────
-#  EMOTION — Gemini Vision (called every 30s from frontend)
-# ─────────────────────────────────────────────────────
+@app.post("/api/crash")
+async def crash_detection(data: dict):
+    g_force = data.get("sensorData", {}).get("gForce", 0)
+    gps     = data.get("gps", {})
+    msg     = f"Potential crash detected! G-force: {g_force:.1f}g."
+    if gps.get("lat"):
+        msg += f" Location: {gps['lat']:.4f}, {gps['lng']:.4f}."
+    audio = await text_to_speech("Crash detected! Calling emergency services in 5 seconds. Tap dismiss if you're okay.")
+    return {"message": msg, "audio": audio}
 
 class EmotionRequest(BaseModel):
-    image: str  # base64 JPEG, no data URL prefix
+    image: str
 
 @app.post("/api/emotion")
 async def detect_emotion(req: EmotionRequest):
-    """
-    Accepts a base64 JPEG frame from the front camera.
-    Returns one word: neutral | happy | tired | stressed.
-    Uses gemini-2.0-flash vision — fast and cheap.
-    Called every 30s so API usage stays very low.
-    """
     try:
         image_part = types.Part.from_bytes(
             data=base64.b64decode(req.image),
             mime_type="image/jpeg"
         )
         text_prompt = (
-            "Look at this driver's face. Respond with exactly ONE word only — "
-            "no punctuation, no explanation: "
-            "neutral (alert and calm), "
-            "happy (smiling or positive), "
-            "tired (eyes drooping, yawning, head drooping), or "
-            "stressed (tense, frowning, gripping). "
-            "If no face is visible, respond: neutral"
+            "Look at this driver's face. Respond with exactly ONE word — "
+            "neutral, happy, tired, or stressed. "
+            "If no face visible: neutral"
         )
         response = gemini_client.models.generate_content(
             model="gemini-2.5-flash",
             contents=[image_part, text_prompt],
-            config=types.GenerateContentConfig(
-                temperature=0.1,   # low temp = consistent single-word answers
-                max_output_tokens=5,
-            )
+            config=types.GenerateContentConfig(temperature=0.1, max_output_tokens=5)
         )
         raw = response.text.strip().lower().split()[0]
         valid = {"neutral", "happy", "tired", "stressed"}
@@ -501,8 +451,10 @@ async def detect_emotion(req: EmotionRequest):
         logging.error(f"Emotion detection error: {e}")
         return {"emotion": "neutral"}
 
+@app.get("/api/health")
+async def health():
+    return {"status": "ok", "trip_active": trip_active, "conversation_turns": len(conversation_history)}
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
