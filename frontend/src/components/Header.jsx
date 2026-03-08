@@ -1,7 +1,8 @@
 import { Wifi, WifiOff, Mic, MicOff } from "lucide-react";
 import WaveformBar from "./WaveformBar";
 
-export default function Header({ connected, listening, aiSpeaking, micVolume }) {
+// listenMode: "wake" = waiting for Nina, "active" = open 10s listen window
+export default function Header({ connected, aiSpeaking, micVolume, listenMode, tripStarted }) {
   return (
     <div className="sticky top-0 z-40 bg-white border-b border-gray-100">
       <div className="px-4 py-3 flex items-center justify-between">
@@ -25,7 +26,7 @@ export default function Header({ connected, listening, aiSpeaking, micVolume }) 
         {/* Status Row */}
         <div className="flex items-center gap-2">
 
-          {/* AI Speaking Waveform */}
+          {/* AI Speaking */}
           {aiSpeaking && (
             <div className="flex items-center gap-1.5 bg-red-50 px-2.5 py-1.5 rounded-full">
               <WaveformBar active={true} color="red" bars={8} />
@@ -33,31 +34,32 @@ export default function Header({ connected, listening, aiSpeaking, micVolume }) 
             </div>
           )}
 
-          {/* Mic Status */}
-          <div className={`flex items-center gap-1 px-2 py-1.5 rounded-full ${
-            listening ? 'bg-gray-100' : 'bg-gray-50'
-          }`}>
-            {listening ? (
-              <Mic size={12} className="text-gray-500" />
-            ) : (
-              <MicOff size={12} className="text-gray-300" />
-            )}
-            {listening && micVolume > 20 && (
-              <div className="flex gap-px items-end h-3">
-                {[...Array(4)].map((_, i) => (
-                  <div
-                    key={i}
-                    className="w-px bg-red-400 rounded-full transition-all duration-75"
-                    style={{ height: `${Math.min(12, (micVolume / 60) * 12 * (0.5 + Math.random() * 0.5))}px` }}
-                  />
-                ))}
+          {/* Mic / Wake word status — only shown during a trip */}
+          {!aiSpeaking && tripStarted && (
+            listenMode === "active" ? (
+              <div className="flex items-center gap-1.5 bg-green-50 px-2.5 py-1.5 rounded-full">
+                <Mic size={12} className="text-green-500" />
+                {micVolume > 20 && (
+                  <div className="flex gap-px items-end h-3">
+                    {[...Array(4)].map((_, i) => (
+                      <div key={i} className="w-px bg-green-400 rounded-full transition-all duration-75"
+                        style={{ height: `${Math.min(12, (micVolume / 60) * 12 * (0.5 + Math.random() * 0.5))}px` }} />
+                    ))}
+                  </div>
+                )}
+                <span className="text-[10px] font-600 text-green-600">Listening...</span>
               </div>
-            )}
-          </div>
+            ) : (
+              <div className="flex items-center gap-1.5 bg-gray-50 px-2.5 py-1.5 rounded-full">
+                <MicOff size={12} className="text-gray-300" />
+                <span className="text-[10px] font-500 text-gray-400">Say "Nina"</span>
+              </div>
+            )
+          )}
 
-          {/* Hardware Sensor Connection — green when ESP32 connected, gray when not */}
+          {/* Hardware Sensor */}
           <div className={`flex items-center gap-1 px-2 py-1.5 rounded-full ${
-            connected ? 'bg-green-50' : 'bg-gray-50'
+            connected ? "bg-green-50" : "bg-gray-50"
           }`}>
             {connected ? (
               <>
