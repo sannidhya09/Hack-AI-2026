@@ -192,7 +192,7 @@ TRIGGER GUIDE:
 
     try:
         response = gemini_client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-2.5-flash",
             contents=full_prompt,
             config=types.GenerateContentConfig(
                 temperature=0.85,
@@ -380,7 +380,7 @@ End with something encouraging. Keep it conversational — this will be read alo
 
     try:
         response = gemini_client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-2.5-flash",
             contents=prompt,
             config=types.GenerateContentConfig(max_output_tokens=150)
         )
