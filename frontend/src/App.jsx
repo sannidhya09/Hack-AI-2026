@@ -90,30 +90,36 @@ export default function App() {
   const audioCtxRef      = useRef(null);
   const analyserRef      = useRef(null);
   const animFrameRef     = useRef(null);
+  const persistentAudio  = useRef(null); // single reused <audio> element — stays iOS-authorized
 
   // ─── iOS Audio Unlock + Start ────────────────────
   const unlockAudio = async () => {
+    // Create ONE persistent <audio> element inside the user gesture.
+    // iOS authorizes this element for the entire page session — it never expires.
+    const pa = new Audio();
+    pa.preload = "auto";
+    // Play a tiny silent mp3 (44 bytes) to fully authorize the element on iOS
+    pa.src = "data:audio/mpeg;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU2LjM2LjEwMAAAAAAAAAAAAAAA//OEAAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAAEAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV6urq6urq6urq6urq6urq6urq6urq6urq6v////////////////////////////////8AAAAATGF2YzU2LjQxAAAAAAAAAAAAAAAAJAAAAAAAAAAAASDs90hvAAAAAAAAAAAAAAAAAAAA//MUZAAAAAGkAAAAAAAAA0gAAAAATEFN//MUZAMAAAGkAAAAAAAAA0gAAAAARTMu//MUZAYAAAGkAAAAAAAAA0gAAAAAOTku//MUZAkAAAGkAAAAAAAAA0gAAAAANVVV";
+    try { await pa.play(); pa.pause(); pa.currentTime = 0; } catch {}
+    persistentAudio.current = pa;
+
+    // Also set up AudioContext for mic volume visualizer
     try {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
       await ctx.resume();
-      const buf = ctx.createBuffer(1, 1, 22050);
-      const src = ctx.createBufferSource();
-      src.buffer = buf;
-      src.connect(ctx.destination);
-      src.start(0);
       audioCtxRef.current = ctx;
       startMic(ctx);
     } catch (e) {
-      console.warn("Audio unlock:", e);
+      console.warn("AudioContext setup:", e);
     }
     setAudioStarted(true);
     live.current.audioStarted = true;
   };
 
   // ─── Audio Playback ──────────────────────────────
-  // Use a blob URL so the full audio is buffered before playback starts.
-  // This fixes iOS cutting audio short mid-sentence.
-  // We keep the AudioContext alive just to stay unlocked, but play via Audio element.
+  // Uses the single persistent <audio> element authorized during unlock.
+  // iOS keeps this element authorized for the full page session regardless
+  // of AudioContext state, background/foreground changes, or idle time.
   const playAudio = (b64) => {
     setAiSpeaking(true);
     live.current.aiSpeaking = true;
@@ -122,30 +128,52 @@ export default function App() {
     const done = () => {
       setAiSpeaking(false);
       live.current.aiSpeaking = false;
-      setTimeout(() => { try { recognitionRef.current?.start(); } catch {} }, 500);
+      setTimeout(() => { try { recognitionRef.current?.start(); } catch {} }, 600);
     };
 
-    try {
-      // Keep AudioContext resumed so iOS doesn't suspend it
-      const ctx = audioCtxRef.current;
-      if (ctx && ctx.state === "suspended") ctx.resume();
+    const doPlay = async () => {
+      try {
+        const pa = persistentAudio.current;
+        if (!pa) { done(); return; }
 
-      // Convert base64 → Blob → object URL
-      // This ensures the full file is in memory before playback begins
-      const binary = atob(b64);
-      const bytes  = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const blob   = new Blob([bytes], { type: "audio/mpeg" });
-      const url    = URL.createObjectURL(blob);
+        // Stop any currently playing audio cleanly
+        try { pa.pause(); pa.currentTime = 0; } catch {}
 
-      const audio  = new Audio(url);
-      audio.onended = () => { URL.revokeObjectURL(url); done(); };
-      audio.onerror = () => { URL.revokeObjectURL(url); done(); };
-      audio.play().catch(() => { URL.revokeObjectURL(url); done(); });
-    } catch (e) {
-      console.warn("Audio play error:", e);
-      done();
-    }
+        // base64 → Blob → object URL (full file in memory before playback)
+        const binary = atob(b64);
+        const bytes  = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const blob = new Blob([bytes], { type: "audio/mpeg" });
+        const url  = URL.createObjectURL(blob);
+
+        pa.onended = () => { URL.revokeObjectURL(url); done(); };
+        pa.onerror = () => { URL.revokeObjectURL(url); done(); };
+        pa.src = url;
+        pa.load(); // force load the new src before playing
+
+        try {
+          await pa.play();
+        } catch (err) {
+          // Last resort: if persistent element fails (very rare), create a fresh one
+          console.warn("Persistent audio failed, using fallback:", err.message);
+          URL.revokeObjectURL(url);
+          const binary2 = atob(b64);
+          const bytes2  = new Uint8Array(binary2.length);
+          for (let i = 0; i < binary2.length; i++) bytes2[i] = binary2.charCodeAt(i);
+          const blob2 = new Blob([bytes2], { type: "audio/mpeg" });
+          const url2  = URL.createObjectURL(blob2);
+          const fallback = new Audio(url2);
+          fallback.onended = () => { URL.revokeObjectURL(url2); done(); };
+          fallback.onerror = () => { URL.revokeObjectURL(url2); done(); };
+          fallback.play().catch(() => { URL.revokeObjectURL(url2); done(); });
+        }
+      } catch (e) {
+        console.warn("doPlay error:", e);
+        done();
+      }
+    };
+
+    doPlay();
   };
 
   // ─── GPS + Speed ──────────────────────────────────
