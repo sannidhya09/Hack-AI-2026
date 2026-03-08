@@ -42,9 +42,9 @@ async def text_to_speech(text: str) -> Optional[str]:
     if not ELEVENLABS_KEY or not text:
         return None
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             r = await client.post(
-                f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}/stream",
+                f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}",
                 headers={
                     "xi-api-key": ELEVENLABS_KEY,
                     "Content-Type": "application/json",
@@ -137,7 +137,7 @@ You have been in this car since the trip started. You have seen every hard brake
 
 HOW YOU TALK:
 - You are spoken aloud through car speakers. Write exactly how you would say it out loud, not how you would type it.
-- 1 to 3 sentences always. Never longer. This is a moving car.
+- Speak naturally for up to 30 seconds — enough to say something real and meaningful. Aim for 3-6 sentences for normal responses, more if the driver asked something interesting or wants to chat.
 - Contractions, casual language, real human rhythm and pace.
 - Ask follow-up questions when the driver seems to want to talk.
 - Light humor at the right moment, never forced.
@@ -276,10 +276,11 @@ Respond as CoDriver:"""
             config=types.GenerateContentConfig(
                 temperature=0.85,
                 top_p=0.95,
-                max_output_tokens=150,
+                max_output_tokens=1000,
             )
         )
         reply = response.text.strip()
+
 
         # Save to conversation history
         if req.driverMessage:
@@ -375,7 +376,7 @@ async def trip_end(data: dict):
 
     prompt = f"""{CODRIVER_PERSONA}
 
-The trip just ended. Give a warm, specific, conversational 2-3 sentence summary of THIS exact trip.
+The trip just ended. Give a warm, specific, conversational summary of this exact trip. You can speak for up to 30 seconds — be thorough.
 Trip duration: {mins} minutes
 Max speed reached: {max_speed_mph} mph
 Hard brakes: {hard_brakes}
@@ -393,7 +394,7 @@ End with something like "see you next time" or "safe travels"."""
         response = gemini_client.models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt,
-            config=types.GenerateContentConfig(max_output_tokens=180)
+            config=types.GenerateContentConfig(max_output_tokens=1000)
         )
         summary_text = response.text.strip()
     except:
