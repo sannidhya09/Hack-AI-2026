@@ -38,7 +38,13 @@ gemini_client = genai.Client(api_key=GEMINI_KEY)
 db = None
 if MONGODB_URI and MONGODB_URI != "your_mongodb_uri":
     try:
-        mongo_client = AsyncIOMotorClient(MONGODB_URI, serverSelectionTimeoutMS=3000, tls=True, tlsAllowInvalidCertificates=True)
+        mongo_client = AsyncIOMotorClient(
+            MONGODB_URI,
+            serverSelectionTimeoutMS=3000,
+            tls=True,
+            tlsAllowInvalidCertificates=True,
+            tlsInsecure=True,
+        )
         db = mongo_client.codriver
         logging.info("MongoDB connected")
     except Exception as e:
@@ -211,7 +217,7 @@ HOW TO RESPOND BY TRIGGER:
 
     try:
         response = gemini_client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             contents=full_prompt,
             config=types.GenerateContentConfig(
                 temperature=0.82,
@@ -419,7 +425,7 @@ Rules:
 
     try:
         response = gemini_client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             contents=prompt,
             config=types.GenerateContentConfig(max_output_tokens=150)
         )
@@ -465,23 +471,22 @@ async def detect_emotion(req: EmotionRequest):
     Called every 30s so API usage stays very low.
     """
     try:
+        image_part = types.Part.from_bytes(
+            data=base64.b64decode(req.image),
+            mime_type="image/jpeg"
+        )
+        text_prompt = (
+            "Look at this driver's face. Respond with exactly ONE word only — "
+            "no punctuation, no explanation: "
+            "neutral (alert and calm), "
+            "happy (smiling or positive), "
+            "tired (eyes drooping, yawning, head drooping), or "
+            "stressed (tense, frowning, gripping). "
+            "If no face is visible, respond: neutral"
+        )
         response = gemini_client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=[
-                types.Part.from_bytes(
-                    data=base64.b64decode(req.image),
-                    mime_type="image/jpeg"
-                ),
-                types.Part.from_text(
-                    "Look at this driver's face. Respond with exactly ONE word only — "
-                    "no punctuation, no explanation: "
-                    "neutral (alert and calm), "
-                    "happy (smiling or positive), "
-                    "tired (eyes drooping, yawning, head drooping), or "
-                    "stressed (tense, frowning, gripping). "
-                    "If no face is visible, respond: neutral"
-                )
-            ],
+            model="gemini-2.5-flash",
+            contents=[image_part, text_prompt],
             config=types.GenerateContentConfig(
                 temperature=0.1,   # low temp = consistent single-word answers
                 max_output_tokens=5,
