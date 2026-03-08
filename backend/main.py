@@ -38,7 +38,7 @@ gemini_client = genai.Client(api_key=GEMINI_KEY)
 db = None
 if MONGODB_URI and MONGODB_URI != "your_mongodb_uri":
     try:
-        mongo_client = AsyncIOMotorClient(MONGODB_URI, serverSelectionTimeoutMS=3000)
+        mongo_client = AsyncIOMotorClient(MONGODB_URI, serverSelectionTimeoutMS=3000, tls=True, tlsAllowInvalidCertificates=True)
         db = mongo_client.codriver
         logging.info("MongoDB connected")
     except Exception as e:
