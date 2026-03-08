@@ -240,7 +240,7 @@ export default function App() {
         setMaxSpeed(prev => Math.max(prev, smoothed));
         const drop = prevSpeedRef.current - spd;
         const dt2  = (now - prevSpeedTimeRef.current) / 1000;
-        if (drop > 48 && dt2 < 1.5 && prevSpeedRef.current > 30) triggerCrash();
+        if (live.current.tripStarted && drop > 48 && dt2 < 1.5 && prevSpeedRef.current > 30) triggerCrash();
         prevSpeedRef.current     = spd;
         prevSpeedTimeRef.current = now;
       },
@@ -499,6 +499,15 @@ export default function App() {
   const startTrip = async () => {
     tripStartTimeRef.current = Date.now();
     lastProactiveRef.current = Date.now();
+    // Reset all counters so they don't bleed from previous session
+    setHardBrakes(0);  setSharpTurns(0);  setHardAccels(0);
+    setCurrentGForce(0); setMaxSpeed(0); setSensorData(null);
+    live.current.hardBrakes = 0; live.current.sharpTurns = 0;
+    live.current.hardAccels = 0; live.current.gForce = 0;
+    // Reset speed history so old GPS readings don't carry over
+    speedHistoryRef.current  = [];
+    prevSpeedRef.current     = 0;
+    prevSpeedTimeRef.current = Date.now();
     setTripStarted(true);
     live.current.tripStarted = true;
     setConversation([]);
